@@ -34,10 +34,9 @@ One file: **`index.html`**. It is a working **design prototype** of the widget. 
 | **Quiz** | A practice quiz with literal and inference questions. |
 | **Progress** | Session numbers and a "Download session data" button (JSON file). |
 
-Other things it can do:
+Other things it can/will do:
 
 - Drag it around, resize it, minimize it, or close it to a small button.
-- Works on phones as a bottom panel.
 - Light and dark theme.
 - "Use my own text" button to paste any passage.
 
