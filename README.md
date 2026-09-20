@@ -56,17 +56,10 @@ This is a **prototype**, so some parts are placeholders:
 1. Download `index.html`.
 2. Double-click it. It opens in your browser.
 
-## 4. How to put it online with GitHub Pages
-
-1. Create a new repository on github.com.
-2. Upload `index.html` (and this README).
-3. Go to **Settings, then Pages**.
-4. Choose the **main** branch and click **Save**.
-5. After about a minute, GitHub shows a link. Anyone can open it.
 
 ---
 
-## 5. How the full system will fit together
+## 4. How the full system will fit together
 
 ```
 Student's browser            Our server                    AI
@@ -133,7 +126,7 @@ If the backend can't be reached, the widget falls back to the demo replies, so i
 
 ---
 
-## 6. What we need to do next
+## 5. What we need to do next
 
 Work in this order. Each step leaves us with something that still works.
 
@@ -170,7 +163,7 @@ Work in this order. Each step leaves us with something that still works.
 
 ---
 
-## 7. Panel requirements checklist
+## 6. Panel requirements checklist
 
 - [ ] Interviews or consultations with students and teachers
 - [ ] Student and teacher accounts (admin optional)
@@ -180,7 +173,7 @@ Work in this order. Each step leaves us with something that still works.
 
 ---
 
-## 8. Planned tech
+## 7. Planned tech
 
 | Part | Choice |
 |---|---|
@@ -190,7 +183,7 @@ Work in this order. Each step leaves us with something that still works.
 | AI | Small open-source LLM, fine-tuned; spaCy / Sentence-Transformers for light tasks |
 | Hosting | GitHub Pages for the screen; free tiers (Render, Supabase, etc.) for backend and database |
 
-## 9. To do
+## 8. To do
 
 | Lock scope with panel, start consent/ethics paperwork |
 | Teacher interviews, data labeling, build the dataset |
@@ -199,14 +192,14 @@ Work in this order. Each step leaves us with something that still works.
 | Testing (confusion matrix, F1, ISO 25010) and student pilot |
 | Fixes, documentation, defense |
 
-## 10. Out of scope for now
+## 9. Out of scope for now
 
 - Eye-tracking (GCAS)
 - Full story/character map (Angel-StoryMapper)
 - Native mobile app
 - Optional extra if time allows: SQ3R-style question gating
 
-## 11. Suggested folder layout (when the project grows)
+## 10. Suggested folder layout (when the project grows)
 
 ```
 /frontend    the widget (index.html now, React later)
@@ -216,7 +209,7 @@ Work in this order. Each step leaves us with something that still works.
 README.md
 ```
 
-## 12. Team
+## 11. Team
 
 | Name | Role |
 |---|---|
