@@ -6,7 +6,7 @@ This is our thesis project (Reading Comprehension track). This README explains *
 
 ---
 
-## 1. The idea in simple words
+## 1. The idea
 
 Many students read a whole page without noticing they didn't understand it. Our system acts like a **debugger for reading**, the way programmers use a debugger to find bugs in code:
 
