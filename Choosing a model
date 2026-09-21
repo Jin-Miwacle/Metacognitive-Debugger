@@ -23,7 +23,6 @@ Big models (27B and up) won't fit, and you don't need them for short reading hin
 
 If we jusg want one to start with, take the **Qwen ~3-4B instruct** or **Llama 3.2 3B instruct** version. 
 Always pick the version whose name ends in **"instruct"**, because those already know how to follow directions. 
-Base models without that word are harder to train.
 (An instruct model starts as a base model, 
 then gets extra training on examples of people asking for something and getting a helpful answer. 
 It learns that a message is a request and that it should respond to it. 
