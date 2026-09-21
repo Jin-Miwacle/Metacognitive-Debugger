@@ -1,0 +1,62 @@
+I suggest a small "instruct" model with about 3 to 4 billion parameters from the Qwen, Llama, or Gemma families, and try two or three of them before committing. 
+Which exact version matters less than the training data. The search results I found were mixed and partly out of date, so check Hugging Face for the newest small version of each family.
+
+## Why a small model
+
+Many teams now pick models in the 1 to 7 billion parameter range and fine-tune them for one job. 
+Once specialized, these compact models can match or beat older models of 20B+ parameters. 
+Small models are also easier to run cheaply, and that fits your budget and your student pilot.
+
+source: https://articles.firstaimovers.com/articles/fine-tuning-llms-vs-rag-2026/
+
+A small model also fits free tools. 
+A model of about 3 to 4B parameters can usually be fine-tuned on a free Colab GPU using a memory-saving method called **QLoRA**. 
+Big models (27B and up) won't fit, and you don't need them for short reading hints.
+
+## Models to try first
+
+| Family    | Good size to try                    | Why                                                               |
+|-----------|-------------------------------------|-------------------------------------------------------------------|
+| **Qwen**  | about 3-4B                          | Follows instructions well, and has many tutorials for fine-tuning |
+| **Llama** | 3.2 3B (or 1B if your GPU is small) | Very popular, so lots of guides and help online                   |
+| **Gemma** | 4B (or 1B)                          | Small and easy to run                                             |
+
+If we jusg want one to start with, take the **Qwen ~3-4B instruct** or **Llama 3.2 3B instruct** version. 
+Always pick the version whose name ends in **"instruct"**, because those already know how to follow directions. 
+Base models without that word are harder to train.
+(An instruct model starts as a base model, 
+then gets extra training on examples of people asking for something and getting a helpful answer. 
+It learns that a message is a request and that it should respond to it. 
+That's why instruct models work well right away, and why they work with chat-style formats. 
+Base models generally don't handle those chat formats out of the box.)
+
+Check the license too. Most of these are fine for a thesis, but read the terms of the one you choose and note it in your documentation.
+
+## How to choose between them
+
+Test them yourself:
+
+1. Write about 20 example situations, such as a sentence a student is stuck on and the kind of hint you'd want.
+2. Give the same 20 to each model, **before any training**.
+3. Have your partner teacher (or your group) score the hints.
+4. Pick the best one. Those scores are also your **"before" numbers**, which your fine-tuned model has to beat.
+
+If we have Filipino texts, include a few in the 20 examples, since models differ in how well they handle Filipino.
+
+## T5?
+
+T5 works well for generating quiz questions, but it's weaker at writing friendly hints. 
+For a beginner, **one model for everything** is easier: the same fine-tuned model writes hints and quiz questions. 
+We can add T5 later if question quality is a problem.
+
+## What matters more than the model
+
+The **training data**. A small model trained on a few hundred good, 
+teacher-checked examples beats a bigger model trained on messy ones. 
+The panel will also ask how you made your dataset, more than which model you picked. 
+That's why the labeling guide and the teacher-labeled samples in your plan are so important.
+
+## Suggested tools
+
+- **Unsloth** or **Hugging Face (transformers + peft)** for training. Both have beginner notebooks for Colab.
+- Start with about 200 to 500 examples for a first test run, just to check that the whole process works before you collect more.
