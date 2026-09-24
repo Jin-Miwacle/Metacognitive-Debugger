@@ -334,15 +334,18 @@
 <script>
 /* =====================================================================
    CONFIG
-   To connect your real backend later, set API_URL to your endpoint, e.g.
-   "http://localhost:8000/partner".  The widget will POST JSON like:
-     { mode: "debug" | "followup" | "stuck", problem: "vocab"|"lost"|"connect"|"why",
-       passage: "...selected text...", paragraph: "...", goal: "...", message: "..." }
-   and expects JSON back:  { reply: "text the partner should say" }
-   If API_URL is null (or the call fails), built-in demo replies are used.
+   API_BASE is the address of your backend, e.g. "http://localhost:8000".
+   Leave it as null to use the built-in offline demo.
+
+   The widget calls three addresses on the backend:
+     POST /partner  -> { reply }      hints while the student is debugging
+     POST /quiz     -> { questions }  a quiz written from the text on the page
+     POST /checkin  -> { prompt }     a short check-in question
+   If the backend can't be reached, the widget quietly falls back to the
+   offline demo versions and labels them as demo.
    ===================================================================== */
 const CONFIG = {
-  API_URL: null,
+  API_BASE: null,
   CHECKIN_EVERY_SEC: 90
 };
 
@@ -357,8 +360,9 @@ const state = {
   threads: [],           // debug sessions
   pending: null,         // current text selection { text, paragraph, range }
   selectionNote: '',
-  checkin: { on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [] },
+  checkin: { on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [] },
   answers: {},           // quiz answers by question index
+  quiz: { status: 'idle', questions: [], source: null, error: '' },
   usingDemoText: true,
   startedAt: Date.now(),
   log: []
@@ -367,8 +371,8 @@ function logEvent(type, data = {}) {
   state.log.push({ t: new Date().toISOString(), type, ...data });
 }
 
-/* ---------- Demo quiz (stands in for the question-generation module) ---------- */
-const DEMO_QUIZ = [
+/* ---------- Offline demo quiz (used only if the backend is unavailable, and only for the demo story) ---------- */
+const OFFLINE_QUIZ = [
   { kind: 'Literal', q: 'How many steps does Mara climb to reach the lamp?',
     options: ['Nineteen', 'Ninety-one', 'Ninety-nine', 'One hundred nine'], answer: 1,
     why: 'The first sentence states the number directly.' },
@@ -380,13 +384,15 @@ const DEMO_QUIZ = [
     why: 'He had never met her, so he must have known her from something else: the old signal that the keepers use.' }
 ];
 
-/* ---------- Partner replies (demo stand-in for the fine-tuned LLM) ---------- */
+/* ---------- The four kinds of trouble a student can pick ---------- */
 const PROBLEMS = {
   vocab:   { label: 'A word I don\u2019t know', sub: 'Unfamiliar or tricky word' },
   lost:    { label: 'I lost the point',       sub: 'I read it but it didn\u2019t land' },
   connect: { label: 'Ideas don\u2019t connect', sub: 'How does this link to before?' },
-  why:     { label: 'Why did this happen?',   sub: 'Something is implied, not said' }
+  why:     { label: 'Why did this happen?',   sub: 'Something is implied, not stated' }
 };
+
+/* ---------- Offline demo replies (used ONLY if the backend can't be reached) ---------- */
 const DEMO_REPLIES = {
   vocab: [
     'Pick the one word that blocks you. Reread the sentence with that word skipped. Do you still get the gist? Then look at the sentences around it for clues: an example, a contrast, or a restatement.',
@@ -405,8 +411,8 @@ const DEMO_REPLIES = {
     'Ask: what would have to be true for this to make sense? Look back for a clue that points that way.'
   ],
   followup: [
-    'Good attempt. Compare your version with the original: did you keep who did what? If something is missing, add it. Then tell me below if it makes sense now.',
-    'That helps. Check one thing: does your explanation still hold when you read the next sentence? If yes, mark it as clear.'
+    'Compare your version with the original: did you keep who did what? If something is missing, add it. Then tell me below if it makes sense now.',
+    'Check one thing: does your explanation still hold when you read the next sentence? If yes, mark it as clear.'
   ],
   stuck: [
     'That\u2019s okay. This one is flagged so your teacher can see it. Break it down: what is the subject, what is it doing, and which earlier line does it depend on?'
@@ -414,23 +420,45 @@ const DEMO_REPLIES = {
 };
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-async function askPartner(payload) {
-  if (CONFIG.API_URL) {
-    try {
-      const r = await fetch(CONFIG.API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-      });
-      if (r.ok) { const d = await r.json(); if (d && d.reply) return d.reply; }
-    } catch (e) { console.warn('Partner API failed, using demo reply.', e); }
+/* ---------- Talking to the backend ---------- */
+// Sends JSON to the backend. Returns the answer, or null if the backend is off or fails.
+async function callBackend(path, body) {
+  if (!CONFIG.API_BASE) return null;
+  try {
+    const r = await fetch(CONFIG.API_BASE.replace(/\/$/, '') + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (r.ok) return await r.json();
+    console.warn('The backend answered with an error:', r.status, path);
+  } catch (e) {
+    console.warn('Could not reach the backend, using the offline demo instead.', e);
   }
-  await new Promise(r => setTimeout(r, 450));
-  if (payload.mode === 'debug') return pick(DEMO_REPLIES[payload.problem] || DEMO_REPLIES.lost);
-  if (payload.mode === 'stuck') return pick(DEMO_REPLIES.stuck);
-  return pick(DEMO_REPLIES.followup);
+  return null;
 }
 
-/* ---------- Check-in prompts (periodic monitoring) ---------- */
-const CHECKIN_PROMPTS = [
+// Returns { reply, demo }. demo = true means the offline fallback was used.
+async function askPartner(payload) {
+  const d = await callBackend('/partner', payload);
+  if (d && d.reply) return { reply: d.reply, demo: false };
+  await new Promise(r => setTimeout(r, 450));
+  let reply;
+  if (payload.mode === 'debug') reply = pick(DEMO_REPLIES[payload.problem] || DEMO_REPLIES.lost);
+  else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
+  else reply = pick(DEMO_REPLIES.followup);
+  return { reply, demo: true };
+}
+
+// Builds what we send to /partner, including the conversation so far about this spot.
+function partnerPayload(mode, t, message) {
+  return {
+    mode, problem: t.problem, passage: t.text, paragraph: t.paragraph,
+    goal: state.goal && state.goal.text, message: message || null,
+    history: t.msgs.filter(m => !m.typing).map(m => ({ role: m.from === 'you' ? 'student' : 'coach', text: m.text }))
+  };
+}
+
+/* ---------- Offline check-in prompts (used only if the backend is unavailable) ---------- */
+const OFFLINE_CHECKINS = [
   'Pause for a moment. In one sentence, what have you read so far?',
   'Is what you just read matching your goal? What is still missing?',
   'What is the most confusing part so far? Try selecting it in the text.',
@@ -583,7 +611,7 @@ function renderDebug() {
     <div class="card ${t.status}" data-id="${t.id}">
       <span class="tag ${t.status}">${t.status === 'resolved' ? 'Clear now' : t.status === 'stuck' ? 'Still stuck' : PROBLEMS[t.problem].label}</span>
       <blockquote class="quote">${esc(shorten(t.text, 140))}</blockquote>
-      ${t.msgs.map(m => `<div class="msg ${m.from}${m.typing ? ' typing' : ''}">${esc(m.text)}</div>`).join('')}
+      ${t.msgs.map(m => `<div class="msg ${m.from}${m.typing ? ' typing' : ''}">${esc(m.text)}${m.demo ? '<div class="small" style="margin-top:4px">Offline demo reply (backend not reached)</div>' : ''}</div>`).join('')}
       ${t.status === 'open' && !t.busy ? `
         <form class="reply" data-id="${t.id}">
           <input type="text" placeholder="Explain it in your own words" aria-label="Your reply" autocomplete="off">
@@ -623,8 +651,8 @@ function startDebug(problem) {
   state.pending = null;
   logEvent('debug_start', { id, problem, passage: p.text });
   renderDebug();
-  askPartner({ mode: 'debug', problem, passage: p.text, paragraph: p.paragraph, goal: state.goal && state.goal.text })
-    .then(reply => { t.busy = false; t.msgs = [{ from: 'ai', text: reply }]; renderDebug(); });
+  askPartner(partnerPayload('debug', t))
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, demo: r.demo }]; renderDebug(); });
 }
 function wrapRange(range, id) {
   const mark = document.createElement('mark');
@@ -635,11 +663,12 @@ function wrapRange(range, id) {
 async function sendFollowup(id, message) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.msgs.push({ from: 'you', text: message });
+  const payload = partnerPayload('followup', t, message);   // built before the "Thinking" line is added
   t.busy = true; t.msgs.push({ from: 'ai', text: 'Thinking\u2026', typing: true });
   logEvent('debug_reply', { id, message });
   renderDebug();
-  const reply = await askPartner({ mode: 'followup', problem: t.problem, passage: t.text, paragraph: t.paragraph, goal: state.goal && state.goal.text, message });
-  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: reply }); t.busy = false;
+  const r = await askPartner(payload);
+  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
   renderDebug();
 }
 function setStatus(id, status) {
@@ -654,8 +683,8 @@ async function markStuck(id) {
   t.status = 'stuck'; t.busy = true;
   if (t.mark) t.mark.classList.add('stuck');
   logEvent('debug_stuck', { id });
-  const reply = await askPartner({ mode: 'stuck', problem: t.problem, passage: t.text, paragraph: t.paragraph, goal: state.goal && state.goal.text });
-  t.msgs.push({ from: 'ai', text: reply }); t.busy = false;
+  const r = await askPartner(partnerPayload('stuck', t));
+  t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
   renderDebug();
 }
 reader.addEventListener('click', e => {
@@ -669,10 +698,22 @@ reader.addEventListener('click', e => {
 function startCheckins() {
   const c = state.checkin; c.on = true; c.nextAt = Date.now() + c.everySec * 1000;
 }
-function fireCheckin() {
+async function fireCheckin() {
   const c = state.checkin;
-  c.pending = CHECKIN_PROMPTS[c.i++ % CHECKIN_PROMPTS.length];
-  logEvent('checkin_prompt', { prompt: c.pending });
+  if (c.fetching || c.pending) return;
+  c.fetching = true;
+  if (currentTab() === 'monitor' && !widget.hidden) renderCheckin();
+  const d = await callBackend('/checkin', {
+    goal: state.goal && state.goal.text,
+    text: reader.innerText.trim().slice(0, 6000),
+    struggles: state.threads.map(t => t.text).slice(-5),
+    previous: c.shown.slice(-5)
+  });
+  let prompt, source;
+  if (d && d.prompt) { prompt = d.prompt; source = 'ai'; }
+  else { prompt = OFFLINE_CHECKINS[c.i++ % OFFLINE_CHECKINS.length]; source = 'demo'; }
+  c.fetching = false; c.pending = prompt; c.shown.push(prompt);
+  logEvent('checkin_prompt', { prompt, source });
   updateBadges();
   if (currentTab() === 'monitor' && !widget.hidden) renderCheckin();
 }
@@ -695,13 +736,14 @@ function renderCheckin() {
 
   $('#cinToggle', el).addEventListener('click', () => { c.on ? (c.on = false) : startCheckins(); renderCheckin(); });
   $('#cinEvery', el).addEventListener('change', e => { c.everySec = +e.target.value; if (c.on) c.nextAt = Date.now() + c.everySec * 1000; });
-  $('#askNow', el).addEventListener('click', () => { if (!c.pending) fireCheckin(); renderCheckin(); });
+  $('#askNow', el).addEventListener('click', () => { if (c.pending || c.fetching) renderCheckin(); else fireCheckin(); });
   drawCheckinCard();
   updateCountdown();
   updateBadges();
 }
 function drawCheckinCard() {
   const c = state.checkin, box = $('#cinCard'); if (!box) return;
+  if (c.fetching) { box.innerHTML = '<p class="small">Thinking of a question\u2026</p>'; return; }
   if (!c.pending) { box.innerHTML = ''; return; }
   box.innerHTML = `
     <div class="card">
@@ -740,32 +782,69 @@ setInterval(() => {
 }, 1000);
 
 /* ---------- Quiz tab ---------- */
+// The quiz is written from whatever text is on the page, when the student asks for it.
+async function loadQuiz() {
+  const qz = state.quiz;
+  qz.status = 'loading'; qz.error = ''; state.answers = {};
+  renderCheck();
+  const d = await callBackend('/quiz', {
+    text: reader.innerText.trim(),
+    goal: state.goal && state.goal.text,
+    n: 4
+  });
+  if (d && Array.isArray(d.questions) && d.questions.length) {
+    qz.questions = d.questions; qz.source = 'ai'; qz.status = 'ready';
+    logEvent('quiz_generated', { source: 'ai', count: d.questions.length });
+  } else if (state.usingDemoText) {
+    qz.questions = OFFLINE_QUIZ; qz.source = 'demo'; qz.status = 'ready';
+    logEvent('quiz_generated', { source: 'demo', count: OFFLINE_QUIZ.length });
+  } else {
+    qz.status = 'error';
+    qz.error = CONFIG.API_BASE
+      ? 'The backend could not make a quiz. Look at the server window for the error, then try again.'
+      : 'Making a quiz from your own text needs the backend. Set API_BASE at the top of the script.';
+  }
+  renderCheck();
+}
+
 function renderCheck() {
-  const el = $('#p-check');
-  if (!state.usingDemoText) {
-    el.innerHTML = `<h3>Quiz</h3><p class="lead">Questions for your own text will come from the question-generation module once it is connected. For now, the demo story has a practice quiz.</p>`;
+  const el = $('#p-check'), qz = state.quiz;
+  if (qz.status === 'loading') {
+    el.innerHTML = `<h3>Quiz</h3><p class="lead">Writing questions from your text\u2026 this can take several seconds.</p>`;
     return;
   }
-  const score = Object.entries(state.answers).filter(([i, a]) => a === DEMO_QUIZ[i].answer).length;
+  if (qz.status !== 'ready') {
+    el.innerHTML = `
+      <h3>Check your understanding</h3>
+      <p class="lead">Finish reading first. Then make a short quiz based on this exact text.</p>
+      ${qz.status === 'error' ? `<div class="card"><b>Couldn't make the quiz</b><p style="margin:6px 0 0">${esc(qz.error)}</p></div>` : ''}
+      <div class="row"><button class="btn" id="makeQuiz" type="button">${qz.status === 'error' ? 'Try again' : 'Make my quiz'}</button></div>`;
+    $('#makeQuiz', el).addEventListener('click', loadQuiz);
+    return;
+  }
+  const qs = qz.questions;
   const done = Object.keys(state.answers).length;
+  const score = Object.entries(state.answers).filter(([i, a]) => a === qs[i].answer).length;
   el.innerHTML = `
     <h3>Check your understanding</h3>
-    <p class="lead">${done ? `${score} of ${done} correct so far.` : 'Answer after you finish reading.'}</p>
-    ${DEMO_QUIZ.map((q, i) => {
+    <p class="lead">${done ? `${score} of ${done} correct so far.` : 'Pick the best answer for each question.'}${qz.source === 'demo' ? ' (Offline demo quiz)' : ''}</p>
+    ${qs.map((q, i) => {
       const a = state.answers[i]; const answered = a !== undefined;
       return `<div class="card">
-        <span class="tag">${q.kind}</span>
+        <span class="tag">${esc(q.kind || 'Question')}</span>
         <div><b>${esc(q.q)}</b></div>
         ${q.options.map((o, j) => `<button class="opt ${answered ? (j === q.answer ? 'right' : j === a ? 'wrong' : '') : ''}" data-q="${i}" data-o="${j}" ${answered ? 'disabled' : ''}>${esc(o)}</button>`).join('')}
-        ${answered ? `<div class="explain">${esc(q.why)}</div>` : ''}
+        ${answered ? `<div class="explain">${esc(q.why || '')}${q.evidence ? ` Look at: \u201C${esc(q.evidence)}\u201D` : ''}</div>` : ''}
       </div>`;
-    }).join('')}`;
+    }).join('')}
+    <div class="row"><button class="btn alt" id="newQuiz" type="button">Make new questions</button></div>`;
   $$('.opt', el).forEach(b => b.addEventListener('click', () => {
     const i = +b.dataset.q, j = +b.dataset.o;
     state.answers[i] = j;
-    logEvent('quiz_answer', { question: DEMO_QUIZ[i].q, chosen: DEMO_QUIZ[i].options[j], correct: j === DEMO_QUIZ[i].answer });
+    logEvent('quiz_answer', { question: qs[i].q, chosen: qs[i].options[j], correct: j === qs[i].answer });
     renderCheck();
   }));
+  $('#newQuiz', el).addEventListener('click', loadQuiz);
 }
 
 /* ---------- Progress tab ---------- */
@@ -774,8 +853,9 @@ function renderStats() {
   const resolved = t.filter(x => x.status === 'resolved').length;
   const stuck = t.filter(x => x.status === 'stuck').length;
   const mins = Math.max(1, Math.round((Date.now() - state.startedAt) / 60000));
+  const qs = state.quiz.questions;
   const answered = Object.keys(state.answers).length;
-  const right = Object.entries(state.answers).filter(([i, a]) => a === DEMO_QUIZ[i].answer).length;
+  const right = Object.entries(state.answers).filter(([i, a]) => qs[i] && a === qs[i].answer).length;
   const ci = state.checkin.responses;
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
@@ -806,8 +886,8 @@ function exportLog() {
 }
 function resetSession() {
   $$('mark.dbg', reader).forEach(m => { const p = m.parentNode; while (m.firstChild) p.insertBefore(m.firstChild, m); p.removeChild(m); p.normalize(); });
-  Object.assign(state, { goal: null, threads: [], pending: null, selectionNote: '', answers: {}, startedAt: Date.now(), log: [] });
-  Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0 });
+  Object.assign(state, { goal: null, threads: [], pending: null, selectionNote: '', answers: {}, quiz: { status: 'idle', questions: [], source: null, error: '' }, startedAt: Date.now(), log: [] });
+  Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
   $('#goalLine').textContent = 'No goal set yet';
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
 }
