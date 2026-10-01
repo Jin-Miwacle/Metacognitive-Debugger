@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Metacognitive Debugger – Reading Partner widget</title>
+<title>Reading Partner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
@@ -16,59 +16,113 @@
 
 <!-- Everything below is hidden until login succeeds -->
 <div id="appRoot" hidden>
+  <div class="app-shell">
 
-<header class="topbar">
-  <div><strong>Reading Partner</strong> &nbsp;<span id="userName"></span></div>
-  <div class="actions">
-    <button class="ghost" id="pasteBtn" type="button">Use my own text</button>
-    <button class="ghost" id="themeBtn" type="button" aria-label="Switch light or dark theme">Theme</button>
-    <button class="ghost" type="button" onclick="signOut()">Log out</button>
+    <aside class="sidebar">
+      <div class="sidebar-brand">Reading Partner</div>
+      <nav class="sidebar-nav" aria-label="Main">
+        <button class="side-link" type="button" data-view="readings" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>
+          <span>Readings</span>
+        </button>
+        <button class="side-link" type="button" data-view="quizzes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5.5" y="4.5" width="13" height="16" rx="2"/><path d="M9 4.5V3.3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V4.5M8.5 12l2 2 4.5-4.5"/></svg>
+          <span>Quizzes</span>
+        </button>
+        <button class="side-link" type="button" data-view="classes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8.3" r="3"/><path d="M3.6 19c.6-3 2.7-4.7 5.4-4.7s4.8 1.7 5.4 4.7"/><circle cx="17" cy="8.8" r="2.3"/><path d="M15.3 14.6c2.2.2 3.9 1.8 4.4 4.4"/></svg>
+          <span>Classes</span>
+        </button>
+        <button class="side-link" type="button" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.3 19.8 7.8V16.2L12 20.7 4.2 16.2V7.8Z"/><path d="M9.3 10.3h5.4v3.4H9.3Z"/></svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sidebar-user" id="userName"></div>
+        <button class="ghost" type="button" onclick="signOut()">Log out</button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+
+      <!-- READINGS: pick a teacher's reading, the demo story, or paste your own, then read it -->
+      <section id="readingsView" class="view">
+        <div id="pickerPane" class="view-pad"></div>
+
+        <div id="readerWorkspace" hidden>
+          <div class="reader-toolbar">
+            <button class="ghost" id="changeReadingBtn" type="button">&larr; All readings</button>
+            <button class="ghost" id="pasteBtn" type="button" hidden>Use my own text</button>
+          </div>
+          <div class="reader-grid">
+            <article class="reader-col">
+              <h1 id="docTitle">The Lamp on Harrow Point</h1>
+              <p class="byline" id="docBy">Short story for practice</p>
+              <p class="hint">Select any word, phrase, or sentence you don't follow. The panel on the right helps you work it out.</p>
+              <div id="reader">
+                <p>Every evening at dusk, Mara climbed the ninety-one steps of the lighthouse to light the lamp, just as her grandfather had done before her. The lamp itself was old, but it never failed. What worried her was the harbor below, where fewer boats returned each season.</p>
+                <p>Tonight, a single fishing boat wobbled toward the rocks. Mara did not wave or shout. She turned the lamp's shutter slowly, three long flashes and one short, the way her grandfather had taught her when she was small. The boat straightened and slid into the channel between the stones.</p>
+                <p>At the dock, the fisherman looked up at the tower and lifted his cap. He had never met Mara, yet he knew exactly who was up there. The old signal had told him that the person keeping the light still remembered the old ways, and that the channel was safe to trust.</p>
+              </div>
+            </article>
+
+            <aside class="side-panel" aria-label="Reading Partner">
+              <div class="sp-head"><b>Reading Partner</b><span id="goalLine">No goal set yet</span></div>
+              <div class="tabs" role="tablist">
+                <button class="tab" role="tab" data-tab="goal" aria-selected="true">
+                  <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7.2"/><circle cx="12" cy="12" r="3.4"/><circle cx="12" cy="12" r=".6" fill="currentColor"/></svg>
+                  <span>Goal</span>
+                </button>
+                <button class="tab" role="tab" data-tab="debug" aria-selected="false">
+                  <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 4.5h6M12 4.5V7M7.5 9.5 5.5 7.5M16.5 9.5l2-2"/><rect x="7.5" y="7" width="9" height="12" rx="4.2"/><path d="M4.5 13h3M16.5 13h3M4.8 17.5l2.4-1.3M19.2 17.5l-2.4-1.3"/></svg>
+                  <span>Debug</span>
+                </button>
+                <button class="tab" role="tab" data-tab="monitor" aria-selected="false">
+                  <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5h16v10H9.5L5 19v-3.5H4z"/></svg>
+                  <span>Check-in</span><i class="dot" id="monDot" hidden></i>
+                </button>
+                <button class="tab" role="tab" data-tab="stats" aria-selected="false">
+                  <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4.5 19.5v-6M10 19.5v-10M15.5 19.5v-13M21 19.5v-4"/></svg>
+                  <span>Progress</span>
+                </button>
+              </div>
+              <div class="panel" id="p-goal" role="tabpanel"></div>
+              <div class="panel" id="p-debug" role="tabpanel" hidden></div>
+              <div class="panel" id="p-monitor" role="tabpanel" hidden></div>
+              <div class="panel" id="p-stats" role="tabpanel" hidden></div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUIZZES: pick any reading and take a quiz on it, independent of the reading workspace -->
+      <section id="quizzesView" class="view" hidden>
+        <div id="quizzesPane" class="view-pad"></div>
+      </section>
+
+      <!-- CLASSES: join a teacher's class with a code, see classes you're in -->
+      <section id="classesView" class="view" hidden>
+        <div id="classesPane" class="view-pad"></div>
+      </section>
+
+      <!-- SETTINGS: account details, password, appearance -->
+      <section id="settingsView" class="view" hidden>
+        <div id="settingsPane" class="view-pad"></div>
+      </section>
+
+    </main>
   </div>
-</header>
-
-<main class="sheet">
-  <h1 id="docTitle">The Lamp on Harrow Point</h1>
-  <p class="byline" id="docBy">Short story for practice</p>
-  <p class="hint">Select any word, phrase, or sentence you don't follow. The partner opens and helps you work it out.</p>
-  <article id="reader">
-    <p>Every evening at dusk, Mara climbed the ninety-one steps of the lighthouse to light the lamp, just as her grandfather had done before her. The lamp itself was old, but it never failed. What worried her was the harbor below, where fewer boats returned each season.</p>
-    <p>Tonight, a single fishing boat wobbled toward the rocks. Mara did not wave or shout. She turned the lamp's shutter slowly, three long flashes and one short, the way her grandfather had taught her when she was small. The boat straightened and slid into the channel between the stones.</p>
-    <p>At the dock, the fisherman looked up at the tower and lifted his cap. He had never met Mara, yet he knew exactly who was up there. The old signal had told him that the person keeping the light still remembered the old ways, and that the channel was safe to trust.</p>
-  </article>
-</main>
-
-<!-- Floating widget -->
-<section id="widget" aria-label="Reading Partner">
-  <div class="w-head" id="dragHandle">
-    <div class="grip" aria-hidden="true"></div>
-    <div class="w-title"><b>Reading Partner</b><span id="goalLine">No goal set yet</span></div>
-    <button class="w-btn" id="minBtn" type="button" aria-label="Minimize"><span aria-hidden="true">–</span><i class="dot" id="headDot" hidden></i></button>
-    <button class="w-btn" id="closeBtn" type="button" aria-label="Close widget"><span aria-hidden="true">×</span></button>
-  </div>
-  <div class="w-body">
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" data-tab="goal" aria-selected="true">Goal</button>
-      <button class="tab" role="tab" data-tab="debug" aria-selected="false">Debug</button>
-      <button class="tab" role="tab" data-tab="monitor" aria-selected="false">Check-in<i class="dot" id="monDot" hidden></i></button>
-      <button class="tab" role="tab" data-tab="check" aria-selected="false">Quiz</button>
-      <button class="tab" role="tab" data-tab="stats" aria-selected="false">Progress</button>
-    </div>
-    <div class="panel" id="p-goal" role="tabpanel"></div>
-    <div class="panel" id="p-debug" role="tabpanel" hidden></div>
-    <div class="panel" id="p-monitor" role="tabpanel" hidden></div>
-    <div class="panel" id="p-check" role="tabpanel" hidden></div>
-    <div class="panel" id="p-stats" role="tabpanel" hidden></div>
-  </div>
-</section>
-
-<button id="launcher" type="button" hidden aria-label="Open Reading Partner">
-  <span aria-hidden="true">📖</span> Reading Partner<i class="dot" id="launchDot" hidden></i>
-</button>
+</div>
 
 <dialog id="pasteDlg">
   <form method="dialog">
     <h3 style="margin:0 0 4px">Use your own text</h3>
-    <p class="small" style="margin:0 0 10px">Paste a passage. Separate paragraphs with a blank line. This clears your current marks.</p>
+    <p class="small" style="margin:0 0 10px">Upload a file, or paste a passage directly.</p>
+    <label class="f" for="pasteFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
+    <input type="file" id="pasteFile" accept=".pdf,.docx,.pptx,.txt">
+    <p class="small" id="pasteFileMsg" style="min-height:16px"></p>
+    <label class="f" for="pasteText">Or paste text directly (separate paragraphs with a blank line)</label>
     <textarea id="pasteText" placeholder="Paste your reading here"></textarea>
     <div class="row" style="margin-top:12px; justify-content:flex-end">
       <button class="btn alt" value="cancel">Cancel</button>
@@ -77,14 +131,17 @@
   </form>
 </dialog>
 
-</div><!-- /appRoot -->
-
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="fileExtract.js"></script>
 <script src="auth.js"></script>
+<script src="settings.js"></script>
 <script src="app.js"></script>
 <script>
-  initAuth({ allow: ['student'], onReady: startWidget });
+  initAuth({ allow: ['student'], onReady: handleLogin });
 </script>
 </body>
 </html>

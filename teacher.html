@@ -9,11 +9,17 @@
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <style>
-  .teacher-wrap { max-width: 760px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 40px) 80px; }
-  .teacher-wrap h1 { font-family: var(--serif); font-size: 28px; margin: 0 0 4px; }
   .reading-card { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 12px; }
+  .reading-card .row-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
   .reading-card h3 { margin: 0 0 4px; }
   .reading-card .meta { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  .reading-card .preview {
+    font-family: var(--serif); font-size: 15px; line-height: 1.5; color: var(--muted);
+    margin: 8px 0 0; max-height: 0; overflow: hidden; transition: max-height .2s ease;
+  }
+  .reading-card .preview.open { max-height: 600px; overflow-y: auto; }
+  .reading-card .tiny { background: transparent; border: 0; color: var(--accent); font-size: 13px; font-weight: 600; padding: 2px 0; }
+  .reading-card .tiny.danger { color: var(--bug); }
   .new-reading { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
 </style>
 </head>
@@ -22,41 +28,209 @@
 <div id="authOverlay" class="auth-wrap"></div>
 
 <div id="appRoot" hidden>
-  <header class="topbar">
-    <div><strong>Reading Partner</strong> &nbsp;Teacher &middot; <span id="userName"></span></div>
-    <div class="actions">
-      <button class="ghost" type="button" onclick="signOut()">Log out</button>
-    </div>
-  </header>
+  <div class="app-shell">
 
-  <main class="teacher-wrap">
-    <h1>Your readings</h1>
-    <p class="small" style="color:var(--muted)">Add a passage for your students, then check back here to see where they got stuck.</p>
+    <aside class="sidebar">
+      <div class="sidebar-brand">Reading Partner</div>
+      <nav class="sidebar-nav" aria-label="Main">
+        <button class="side-link" type="button" data-view="dashboard" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4.5" width="7" height="7" rx="1.4"/><rect x="13" y="4.5" width="7" height="7" rx="1.4"/><rect x="4" y="13.5" width="7" height="6" rx="1.4"/><rect x="13" y="13.5" width="7" height="6" rx="1.4"/></svg>
+          <span>Dashboard</span>
+        </button>
+        <button class="side-link" type="button" data-view="classes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8.3" r="3"/><path d="M3.6 19c.6-3 2.7-4.7 5.4-4.7s4.8 1.7 5.4 4.7"/><circle cx="17" cy="8.8" r="2.3"/><path d="M15.3 14.6c2.2.2 3.9 1.8 4.4 4.4"/></svg>
+          <span>Classes</span>
+        </button>
+        <button class="side-link" type="button" data-view="admin" id="adminNavBtn" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.4 19.5 6.7v5.4c0 4.5-3.1 7.4-7.5 8.5-4.4-1.1-7.5-4-7.5-8.5V6.7Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+          <span>Admin</span>
+        </button>
+        <button class="side-link" type="button" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.3 19.8 7.8V16.2L12 20.7 4.2 16.2V7.8Z"/><path d="M9.3 10.3h5.4v3.4H9.3Z"/></svg>
+          <span>Settings</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sidebar-user" id="userName"></div>
+        <button class="ghost" type="button" onclick="signOut()">Log out</button>
+      </div>
+    </aside>
 
-    <div id="readingList"></div>
+    <main class="main-area">
 
-    <div class="new-reading">
-      <h3 style="margin:0 0 10px">Add a reading</h3>
-      <form id="newReadingForm">
-        <label class="f" for="rTitle">Title</label>
-        <input type="text" id="rTitle" required>
-        <label class="f" for="rBody">Text (one blank line between paragraphs)</label>
-        <textarea id="rBody" style="min-height:160px" required></textarea>
-        <div class="row" style="margin-top:12px">
-          <button class="btn" type="submit">Add reading</button>
+      <!-- DASHBOARD: readings list + add-reading form -->
+      <section id="dashboardView" class="view">
+        <div class="view-pad">
+          <h1>Your readings</h1>
+          <p class="hint">Add a passage for your students, then check back here to see where they got stuck.</p>
+
+          <div id="readingList"></div>
+
+          <div class="new-reading">
+            <h3 style="margin:0 0 10px">Add a reading</h3>
+            <form id="newReadingForm">
+              <label class="f" for="rFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
+              <input type="file" id="rFile" accept=".pdf,.docx,.pptx,.txt">
+              <p class="small" id="rFileMsg" style="min-height:16px"></p>
+              <label class="f" for="rTitle">Title</label>
+              <input type="text" id="rTitle" required>
+              <label class="f" for="rBody">Text (one blank line between paragraphs) &mdash; filled in automatically if you uploaded a file above</label>
+              <textarea id="rBody" style="min-height:160px" required></textarea>
+              <div class="row" style="margin-top:12px">
+                <button class="btn" type="submit">Add reading</button>
+              </div>
+              <p class="small" id="newReadingMsg" style="margin-top:8px"></p>
+            </form>
+          </div>
         </div>
-        <p class="small" id="newReadingMsg" style="margin-top:8px"></p>
-      </form>
-    </div>
-  </main>
+      </section>
+
+      <!-- CLASSES: create classes, see join codes and who's in them -->
+      <section id="classesView" class="view" hidden>
+        <div id="classesPane" class="view-pad"></div>
+      </section>
+
+      <!-- ADMIN: every account, every class (only shown to role = admin) -->
+      <section id="adminView" class="view" hidden>
+        <div id="adminPane" class="view-pad"></div>
+      </section>
+
+      <!-- SETTINGS: account details, password, appearance -->
+      <section id="settingsView" class="view" hidden>
+        <div id="settingsPane" class="view-pad"></div>
+      </section>
+
+    </main>
+  </div>
 </div>
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="fileExtract.js"></script>
 <script src="auth.js"></script>
+<script src="settings.js"></script>
 <script>
+let currentProfile = null;
+
+document.getElementById('rFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // so picking the same file twice still fires "change"
+  if (!file) return;
+  const msg = document.getElementById('rFileMsg');
+  msg.style.color = 'var(--muted)';
+  msg.textContent = `Reading ${file.name}…`;
+  try {
+    const text = await extractTextFromFile(file);
+    document.getElementById('rBody').value = text;
+    const titleField = document.getElementById('rTitle');
+    if (!titleField.value.trim()) titleField.value = file.name.replace(/\.[^.]+$/, '');
+    msg.style.color = 'var(--ok)';
+    msg.textContent = `Loaded text from ${file.name}. Review it below, then click "Add reading".`;
+  } catch (err) {
+    msg.style.color = 'var(--bug)';
+    msg.textContent = err.message || 'Could not read that file.';
+  }
+});
+
+function showView(name) {
+  document.querySelectorAll('.side-link').forEach(b => {
+    const active = b.dataset.view === name;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+  document.querySelectorAll('.view').forEach(v => { v.hidden = v.id !== name + 'View'; });
+  if (name === 'settings') renderSettings('settingsPane', currentProfile);
+  if (name === 'classes') loadClasses();
+  if (name === 'admin') renderAdmin();
+}
+document.querySelectorAll('.side-link').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+
+/* =====================================================================
+   CLASSES: create a class (gets a join code), see who's joined, delete it
+   ===================================================================== */
+function makeJoinCode() {
+  // No 0/O or 1/I -- easy to read and say out loud, hard to mistype.
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function loadClasses() {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
+
+  const { data: classes, error } = await supa
+    .from('classes').select('*').eq('teacher_id', currentProfile.id).order('created_at', { ascending: false });
+
+  if (error) {
+    el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const cards = await Promise.all((classes || []).map(async (c) => {
+    const { count } = await supa.from('class_members').select('student_id', { count: 'exact', head: true }).eq('class_id', c.id);
+    return `<div class="reading-card" data-class="${c.id}">
+      <div class="row-top">
+        <div>
+          <h3>${escapeHtml(c.name)}</h3>
+          <p class="meta">Join code <b style="letter-spacing:2px; color:var(--ink)">${c.join_code}</b> &middot; ${count || 0} student${count === 1 ? '' : 's'} joined</p>
+        </div>
+        <button class="tiny danger" type="button" data-act="delete">Delete</button>
+      </div>
+    </div>`;
+  }));
+
+  el.innerHTML = `
+    <h1>Your classes</h1>
+    <p class="hint">Create a class, then share its join code with your students. Only students who join can see the readings you add.</p>
+    ${cards.length ? cards.join('') : '<p class="small">No classes yet. Create your first one below.</p>'}
+
+    <div class="new-reading">
+      <h3 style="margin:0 0 10px">Create a class</h3>
+      <form id="newClassForm">
+        <label class="f" for="cName">Class name</label>
+        <input type="text" id="cName" placeholder="e.g. Grade 9 - Section A" required>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" type="submit">Create class</button>
+        </div>
+      </form>
+    </div>`;
+
+  document.getElementById('newClassForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('cName').value.trim();
+    if (!name) return;
+    // Join codes are unique; collisions are rare but we retry a couple
+    // of times just in case two classes roll the same code.
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const { error } = await supa.from('classes').insert({ teacher_id: currentProfile.id, name, join_code: makeJoinCode() });
+      if (!error) { showToast('Class created.', 'ok'); loadClasses(); return; }
+      lastError = error;
+      if (!/duplicate|unique/i.test(error.message)) break;
+    }
+    showToast('Could not create class: ' + lastError.message, 'bug');
+  });
+
+  el.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+    const card = btn.closest('.reading-card');
+    if (!confirm('Delete this class? Students in it will lose access to your readings, and will need to join again if you recreate it.')) return;
+    const { error } = await supa.from('classes').delete().eq('id', card.dataset.class);
+    if (error) { showToast('Could not delete: ' + error.message, 'bug'); return; }
+    showToast('Class deleted.', 'ok');
+    loadClasses();
+  }));
+}
+
 async function startTeacherPage(profile) {
+  currentProfile = profile;
   document.getElementById('userName').textContent = profile.full_name || 'Teacher';
+  if (profile.role === 'admin') document.getElementById('adminNavBtn').hidden = false;
+  showView('dashboard');
 
   document.getElementById('newReadingForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -85,29 +259,148 @@ async function loadReadings(teacherId) {
   if (error) { list.innerHTML = `<p class="small" style="color:var(--bug)">${error.message}</p>`; return; }
   if (!readings.length) { list.innerHTML = '<p class="small">No readings yet. Add your first one below.</p>'; return; }
 
-  // For each reading, count sessions and how many debug spots are still "stuck".
+  // For each reading, count sessions and how many debug spots are open / resolved / still "stuck".
   const cards = await Promise.all(readings.map(async (r) => {
-    const { count: sessionCount } = await supa
-      .from('sessions').select('*', { count: 'exact', head: true }).eq('reading_id', r.id);
     const { data: sessions } = await supa.from('sessions').select('id').eq('reading_id', r.id);
-    let stuckCount = 0;
-    if (sessions && sessions.length) {
+    const sessionCount = sessions ? sessions.length : 0;
+    let stuck = 0, resolved = 0, open = 0;
+    if (sessionCount) {
       const ids = sessions.map(s => s.id);
-      const { count } = await supa
-        .from('debug_events').select('*', { count: 'exact', head: true })
-        .in('session_id', ids).eq('status', 'stuck');
-      stuckCount = count || 0;
+      const { data: events } = await supa.from('debug_events').select('status').in('session_id', ids);
+      (events || []).forEach(e => {
+        if (e.status === 'stuck') stuck++; else if (e.status === 'resolved') resolved++; else open++;
+      });
     }
-    return `<div class="reading-card">
-      <h3>${escapeHtml(r.title)}</h3>
-      <p class="meta">${sessionCount || 0} student session${sessionCount === 1 ? '' : 's'} &middot; ${stuckCount} spot${stuckCount === 1 ? '' : 's'} still flagged stuck</p>
+    const when = new Date(r.created_at).toLocaleDateString();
+    return `<div class="reading-card" data-reading="${r.id}">
+      <div class="row-top">
+        <div>
+          <h3>${escapeHtml(r.title)}</h3>
+          <p class="meta">Added ${when} &middot; ${sessionCount} student session${sessionCount === 1 ? '' : 's'}${sessionCount ? ` &middot; ${resolved} cleared up &middot; ${stuck} still stuck` : ''}</p>
+        </div>
+        <div class="row" style="gap:10px">
+          <button class="tiny" type="button" data-act="preview">Show text</button>
+          <button class="tiny danger" type="button" data-act="delete">Delete</button>
+        </div>
+      </div>
+      <div class="preview" data-body="${escapeHtml(r.body)}"></div>
     </div>`;
   }));
   list.innerHTML = cards.join('');
+
+  list.querySelectorAll('[data-act="preview"]').forEach(btn => btn.addEventListener('click', () => {
+    const card = btn.closest('.reading-card');
+    const box = card.querySelector('.preview');
+    const open = box.classList.toggle('open');
+    btn.textContent = open ? 'Hide text' : 'Show text';
+    if (open && !box.innerHTML) {
+      box.innerHTML = box.dataset.body.split(/\n\s*\n/).map(p => `<p>${escapeHtml(p)}</p>`).join('');
+    }
+  }));
+  list.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+    const card = btn.closest('.reading-card');
+    if (!confirm('Delete this reading? Student sessions on it will be deleted too.')) return;
+    const { error } = await supa.from('readings').delete().eq('id', card.dataset.reading);
+    if (error) { alert('Could not delete: ' + error.message); return; }
+    loadReadings(currentProfile.id);
+  }));
 }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* =====================================================================
+   ADMIN: every account (with the ability to change a role) and every
+   class, across all teachers. Only reachable if the logged-in profile's
+   role is 'admin' -- the nav button stays hidden otherwise, and the
+   database's own rules (not just this page) are what actually keep a
+   non-admin from doing any of this even if they tried calling it directly.
+   ===================================================================== */
+async function renderAdmin() {
+  const el = document.getElementById('adminPane');
+  el.innerHTML = '<h1>Admin</h1><p class="hint">Loading…</p>';
+
+  const [{ data: rpcUsers, error: uErr }, { data: classes, error: cErr }] = await Promise.all([
+    supa.rpc('admin_list_users'),
+    supa.from('classes').select('id, name, join_code, teacher_id, created_at').order('created_at', { ascending: false })
+  ]);
+  if (cErr) { el.innerHTML = `<h1>Admin</h1><p class="small" style="color:var(--bug)">${escapeHtml(cErr.message)}</p>`; return; }
+
+  let users = rpcUsers, hasEmails = true;
+  if (uErr) {
+    // admin_list_users() is a newer addition -- if admin_emails_migration.sql
+    // hasn't been run yet, fall back to the plain profiles query so the
+    // page still works, just without emails.
+    const fallback = await supa.from('profiles').select('id, full_name, role').order('full_name');
+    if (fallback.error) { el.innerHTML = `<h1>Admin</h1><p class="small" style="color:var(--bug)">${escapeHtml(fallback.error.message)}</p>`; return; }
+    users = fallback.data; hasEmails = false;
+  }
+
+  await renderAdminBody(users, classes, el, hasEmails);
+}
+
+async function renderAdminBody(users, classes, el, hasEmails) {
+  const nameById = {};
+  (users || []).forEach(u => { nameById[u.id] = u.full_name || '(no name)'; });
+
+  const memberCounts = {};
+  if (classes && classes.length) {
+    const { data: members } = await supa.from('class_members').select('class_id');
+    (members || []).forEach(m => { memberCounts[m.class_id] = (memberCounts[m.class_id] || 0) + 1; });
+  }
+
+  const userRows = (users || []).map(u => `
+    <div class="reading-row-card" data-user="${u.id}">
+      <div>
+        <b>${escapeHtml(u.full_name || '(no name)')}</b>
+        <div class="small">${hasEmails ? escapeHtml(u.email || '') : ''}${u.id === currentProfile.id ? (hasEmails ? ' &middot; this is you' : 'This is you') : ''}</div>
+      </div>
+      <select data-role-for="${u.id}" ${u.id === currentProfile.id ? 'disabled title="You can\'t change your own role here."' : ''}>
+        <option value="student" ${u.role === 'student' ? 'selected' : ''}>Student</option>
+        <option value="teacher" ${u.role === 'teacher' ? 'selected' : ''}>Teacher</option>
+        <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+      </select>
+    </div>`).join('');
+
+  const classRows = (classes || []).map(c => `
+    <div class="reading-row-card" data-class="${c.id}">
+      <div>
+        <b>${escapeHtml(c.name)}</b>
+        <div class="small">Teacher: ${escapeHtml(nameById[c.teacher_id] || '(unknown)')} &middot; Code ${c.join_code} &middot; ${memberCounts[c.id] || 0} student${memberCounts[c.id] === 1 ? '' : 's'}</div>
+      </div>
+      <button class="tiny danger" type="button" data-act="delete-class">Delete</button>
+    </div>`).join('');
+
+  el.innerHTML = `
+    <h1>Admin</h1>
+    <p class="hint">Every account and every class, across all teachers.</p>
+
+    <h3 style="margin:22px 0 4px">Accounts (${(users || []).length})</h3>
+    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet &mdash; run admin_emails_migration.sql in Supabase to turn that on.</p>`}
+    <div style="display:flex; flex-direction:column; gap:10px">${userRows || '<p class="small">No accounts found.</p>'}</div>
+
+    <h3 style="margin:28px 0 10px">Classes (${(classes || []).length})</h3>
+    <div style="display:flex; flex-direction:column; gap:10px">${classRows || '<p class="small">No classes created yet.</p>'}</div>`;
+
+  el.querySelectorAll('select[data-role-for]').forEach(sel => sel.addEventListener('change', async () => {
+    const id = sel.dataset.roleFor;
+    const newRole = sel.value;
+    sel.disabled = true;
+    const { error } = await supa.from('profiles').update({ role: newRole }).eq('id', id);
+    sel.disabled = false;
+    if (error) { showToast('Could not change role: ' + error.message, 'bug'); return; }
+    showToast('Role updated.', 'ok');
+  }));
+
+  el.querySelectorAll('[data-act="delete-class"]').forEach(btn => btn.addEventListener('click', async () => {
+    const card = btn.closest('[data-class]');
+    if (!confirm("Delete this class? Its students will lose access to that teacher's readings.")) return;
+    const { error } = await supa.from('classes').delete().eq('id', card.dataset.class);
+    if (error) { showToast('Could not delete: ' + error.message, 'bug'); return; }
+    showToast('Class deleted.', 'ok');
+    renderAdmin();
+  }));
 }
 
 initAuth({ allow: ['teacher', 'admin'], onReady: startTeacherPage });
