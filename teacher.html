@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading Partner – Teacher</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .teacher-wrap { max-width: 760px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 40px) 80px; }
+  .teacher-wrap h1 { font-family: var(--serif); font-size: 28px; margin: 0 0 4px; }
+  .reading-card { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 12px; }
+  .reading-card h3 { margin: 0 0 4px; }
+  .reading-card .meta { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  .new-reading { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<div id="authOverlay" class="auth-wrap"></div>
+
+<div id="appRoot" hidden>
+  <header class="topbar">
+    <div><strong>Reading Partner</strong> &nbsp;Teacher &middot; <span id="userName"></span></div>
+    <div class="actions">
+      <button class="ghost" type="button" onclick="signOut()">Log out</button>
+    </div>
+  </header>
+
+  <main class="teacher-wrap">
+    <h1>Your readings</h1>
+    <p class="small" style="color:var(--muted)">Add a passage for your students, then check back here to see where they got stuck.</p>
+
+    <div id="readingList"></div>
+
+    <div class="new-reading">
+      <h3 style="margin:0 0 10px">Add a reading</h3>
+      <form id="newReadingForm">
+        <label class="f" for="rTitle">Title</label>
+        <input type="text" id="rTitle" required>
+        <label class="f" for="rBody">Text (one blank line between paragraphs)</label>
+        <textarea id="rBody" style="min-height:160px" required></textarea>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" type="submit">Add reading</button>
+        </div>
+        <p class="small" id="newReadingMsg" style="margin-top:8px"></p>
+      </form>
+    </div>
+  </main>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="auth.js"></script>
+<script>
+async function startTeacherPage(profile) {
+  document.getElementById('userName').textContent = profile.full_name || 'Teacher';
+
+  document.getElementById('newReadingForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('rTitle').value.trim();
+    const body = document.getElementById('rBody').value.trim();
+    const msg = document.getElementById('newReadingMsg');
+    if (!title || !body) return;
+    const { error } = await supa.from('readings').insert({ teacher_id: profile.id, title, body });
+    msg.textContent = error ? ('Could not save: ' + error.message) : 'Saved.';
+    if (!error) {
+      document.getElementById('rTitle').value = '';
+      document.getElementById('rBody').value = '';
+      loadReadings(profile.id);
+    }
+  });
+
+  await loadReadings(profile.id);
+}
+
+async function loadReadings(teacherId) {
+  const list = document.getElementById('readingList');
+  list.innerHTML = '<p class="small">Loading...</p>';
+
+  const { data: readings, error } = await supa
+    .from('readings').select('*').eq('teacher_id', teacherId).order('created_at', { ascending: false });
+  if (error) { list.innerHTML = `<p class="small" style="color:var(--bug)">${error.message}</p>`; return; }
+  if (!readings.length) { list.innerHTML = '<p class="small">No readings yet. Add your first one below.</p>'; return; }
+
+  // For each reading, count sessions and how many debug spots are still "stuck".
+  const cards = await Promise.all(readings.map(async (r) => {
+    const { count: sessionCount } = await supa
+      .from('sessions').select('*', { count: 'exact', head: true }).eq('reading_id', r.id);
+    const { data: sessions } = await supa.from('sessions').select('id').eq('reading_id', r.id);
+    let stuckCount = 0;
+    if (sessions && sessions.length) {
+      const ids = sessions.map(s => s.id);
+      const { count } = await supa
+        .from('debug_events').select('*', { count: 'exact', head: true })
+        .in('session_id', ids).eq('status', 'stuck');
+      stuckCount = count || 0;
+    }
+    return `<div class="reading-card">
+      <h3>${escapeHtml(r.title)}</h3>
+      <p class="meta">${sessionCount || 0} student session${sessionCount === 1 ? '' : 's'} &middot; ${stuckCount} spot${stuckCount === 1 ? '' : 's'} still flagged stuck</p>
+    </div>`;
+  }));
+  list.innerHTML = cards.join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+initAuth({ allow: ['teacher', 'admin'], onReady: startTeacherPage });
+</script>
+</body>
+</html>

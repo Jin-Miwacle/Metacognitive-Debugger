@@ -154,7 +154,7 @@
   .panel h3 { font-size: 15px; margin: 0 0 4px; }
   .panel p.lead { margin: 0 0 12px; color: var(--w-muted); }
 
-  textarea, input[type="text"], select {
+  textarea, input[type="text"], input[type="email"], input[type="password"], select {
     width: 100%; font: inherit; color: var(--w-ink); background: var(--w-bg);
     border: 1px solid var(--w-line); border-radius: 10px; padding: 9px 11px;
   }
@@ -258,3 +258,33 @@
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
   }
+
+/* ---------- Login / signup screen ---------- */
+.auth-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: var(--page);
+}
+.auth-wrap[hidden] { display: none; }
+.auth-card {
+  width: 100%; max-width: 380px; background: var(--sheet); border: 1px solid var(--line);
+  border-radius: 18px; padding: 32px 28px; box-shadow: 0 12px 32px rgba(20,24,40,.08);
+}
+.auth-card h1 { font-family: var(--serif); font-size: 26px; margin: 0 0 2px; letter-spacing: -0.01em; }
+.auth-card .auth-sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
+.auth-tabs { display: flex; gap: 4px; background: var(--page); border-radius: 10px; padding: 4px; margin-bottom: 20px; }
+.auth-tab { flex: 1; border: 0; background: transparent; padding: 9px 0; border-radius: 8px; font-weight: 600; color: var(--muted); font-size: 14px; }
+.auth-tab[aria-selected="true"] { background: var(--sheet); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.auth-card label.f { color: var(--ink); font-size: 13px; margin: 14px 0 6px; }
+.auth-card label.f:first-of-type { margin-top: 0; }
+.auth-card input {
+  background: var(--page); border: 1px solid var(--line); color: var(--ink);
+  padding: 11px 13px; border-radius: 10px; font-size: 15px;
+}
+.auth-card input:focus { border-color: var(--accent); }
+.auth-card .scale button { padding: 10px 0; }
+.auth-form[hidden] { display: none; }
+.auth-err {
+  color: var(--bug); font-size: 13px; margin: 0 0 14px; min-height: 0;
+}
+.auth-err:empty { display: none; }
+.auth-submit { width: 100%; margin-top: 20px; padding: 12px 0; font-size: 15px; border-radius: 10px; }

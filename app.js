@@ -580,6 +580,13 @@ $('#themeBtn').addEventListener('click', () => {
   root.dataset.theme = cur === 'dark' ? 'light' : 'dark';
 });
 
-/* ---------- Boot ---------- */
-renderGoal(); renderDebug(); renderCheck(); renderStats();
-initPos();
+/* ---------- Boot ----------
+   This used to run as soon as the page loaded. Now it waits until
+   auth.js confirms the person is logged in as a student, so it is
+   called from index.html instead (see the bottom of that file). */
+function startWidget(profile) {
+  state.user = profile; // { id, role, full_name }
+  document.getElementById('userName').textContent = profile.full_name || 'Student';
+  renderGoal(); renderDebug(); renderCheck(); renderStats();
+  initPos();
+}
