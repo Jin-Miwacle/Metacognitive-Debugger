@@ -1,44 +1,46 @@
 """
-Reading Partner backend (temporary brain: Gemini).
+Reading Partner backend (Brain: unsloth/Llama-3.2-3B-Instruct-bnb-4bit).
 
 The widget (index.html) talks to three addresses on this server:
+    POST /partner   ->  { "reply": "..." }       a hint while the student is debugging
+    POST /quiz      ->  { "questions": [ ... ] } a quiz written from the student's text
+    POST /checkin   ->  { "prompt": "..." }      a short mid-reading check-in question
 
-    POST /partner   ->  { "reply": "..." }        a hint while the student is debugging
-    POST /quiz      ->  { "questions": [ ... ] }  a quiz written from the student's text
-    POST /checkin   ->  { "prompt": "..." }       a short mid-reading check-in question
+Usage:
+    1. On terminal, enter: huggingface-cli login
+    2. Complete steps given and paste token
+    3. Run python main.py
+    4. Open index.html to test the website
 
-Only the functions marked "THE AI CALL" talk to Gemini. When you switch to your
-own fine-tuned model later, those are the only places you change.
 """
 import json
 import os
-import random
+import sys
 from typing import List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-load_dotenv()  # reads the .env file (your secret key lives there)
+MODEL_NAME = os.getenv("LLAMA_3B_4BIT_MODEL", "unsloth/Llama-3.2-3B-Instruct-bnb-4bit")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# If you get a "model not found" error, open Google AI Studio, copy the name
-# of a current "Flash" model, and put it in your .env file as GEMINI_MODEL.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+print(f"Loading local model {MODEL_NAME} (this may take a moment)...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+    device_map="auto"
+)
 
-client = None
-types = None
-if GEMINI_API_KEY:
-    from google import genai
-    from google.genai import types  # noqa: F811
+model.generation_config.max_length = None
+print("Model loaded successfully!")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+app = FastAPI(title="Reading Partner backend (Llama 3.2)")
 
-app = FastAPI(title="Reading Partner backend")
-
-# Lets the widget (a different address) talk to this backend.
-# For the real launch, replace "*" with your real website address.
+# Lets the widget talk to this backend.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,24 +48,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def ask_llama(system_rules: str, prompt: str, *, temperature: float, max_tokens: int) -> str:
+    messages = [
+        {"role": "system", "content": system_rules},
+        {"role": "user", "content": prompt}
+    ]
+    
+    formatted_prompt = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+    )
+    
+    # Ensure pad token is set
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-def ask_gemini(system_rules: str, prompt: str, *, temperature: float, max_tokens: int, schema=None):
-    """THE AI CALL. Every feature goes through this one function."""
-    if client is None:
-        raise RuntimeError("No Gemini key found. Check your .env file.")
-    config = dict(
-        system_instruction=system_rules,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
+    inputs = tokenizer(formatted_prompt, return_tensors="pt")
+    
+    # Explicitly move input tensors to the model's device (handles offloading safely)
+    input_ids = inputs["input_ids"].to(model.device)
+    attention_mask = inputs["attention_mask"].to(model.device)
+    
+    do_sample = temperature > 0.0
+    outputs = model.generate(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=max_tokens,
+        temperature=temperature if do_sample else None,
+        do_sample=do_sample,
+        pad_token_id=tokenizer.eos_token_id
     )
-    if schema is not None:
-        config["response_mime_type"] = "application/json"
-        config["response_schema"] = schema
-    return client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(**config),
-    )
+    
+    # Decode only the newly generated text response
+    generated_ids = outputs[0][input_ids.shape[-1]:]
+    response_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    return response_text.strip()
 
 
 # =====================================================================
@@ -73,158 +93,158 @@ class Turn(BaseModel):
     role: str   # "student" or "coach"
     text: str
 
-
 class Ask(BaseModel):
-    mode: str = "debug"            # "debug" (first hint), "followup", or "stuck"
+    mode: str = "debug"            # "debug", "followup", or "stuck"
     problem: Optional[str] = None  # "vocab", "lost", "connect", or "why"
-    passage: str = ""              # the words the student selected
-    paragraph: str = ""            # the paragraph around it
-    goal: Optional[str] = None     # the student's reading goal
-    message: Optional[str] = None  # the student's latest reply
-    history: List[Turn] = []       # the conversation so far about this spot
+    passage: str = ""              # words selected
+    paragraph: str = ""            # paragraph around it
+    goal: Optional[str] = None     # reading goal
+    message: Optional[str] = None  # student latest reply
+    history: List[Turn] = []       # conversation history
 
+COACH_RULES = """You are a warm, encouraging reading coach for Grade 7 students. 
 
-# The coach's personality and rules. Improving this text is the fastest way
-# to improve the hints.
-COACH_RULES = """You are a warm, sharp reading coach talking with one student about one confusing spot in a text.
-Your job is to help them notice HOW they are reading, not to read the text for them.
+CRITICAL BEHAVIORAL MODES (Follow these strictly):
+1. CHECK THE TARGET PASSAGE: If the student's reply matches or contains the target word/passage, they are RIGHT. You MUST validate them briefly in your own words, confirm they've got it, and tell them they can move on. DO NOT ask another question.
+2. IF THE STUDENT SAYS "I don't know", "just tell me", or asks what something means: STOP asking questions. Give a clear, direct, simple explanation immediately.
+3. OTHERWISE (Socratic Mode): Ask ONE simple guiding question to help them think.
 
-Always:
-- Never give the full answer, and never paraphrase the whole passage for them.
-- Use ONE move per reply: a guiding question, a strategy to try, a clue to look for, or one tiny first step.
-- Use the student's actual words from the passage, so your reply could not be pasted onto a different sentence.
-- Plain, friendly words. Under 60 words. No more than two questions.
-- Do not start two replies the same way. Look at what the coach already said in the conversation and do something different.
-
-Praise rules:
-- NEVER say "Good attempt", "Great question", "Good job", "Great start", "Nice try" or similar stock praise.
-- Do not praise or thank the student for clicking a button or asking for help.
-- Only comment on the student's work if they actually wrote an explanation, and then react to the SPECIFIC thing they said
-  (what is right, or what is missing), not with general praise.
-"""
+General Rules:
+- Keep your response under 45 words.
+- Never use stock praise like "Good job."
+- Use plain, easy-to-understand words."""
 
 MODE_TEXT = {
-    "debug": ("This is the FIRST message. The student has not written anything yet, so do not praise or thank them. "
-              "Go straight to your one move."),
-    "followup": ("The student just replied. Read what they wrote. If it is basically right, confirm it in a few words "
-                 "and invite them to mark it clear. If it is partly right, name the part that works and ask about the "
-                 "missing piece. If it is off, or they say 'idk', do not tell them they are wrong; shrink the task into "
-                 "one smaller question."),
-    "stuck": ("The student tried and is STILL stuck. Break the passage into two tiny steps they can do. You may explain "
-              "the meaning of a hard word, but still do not give the full answer."),
+    "debug": "This is the FIRST message. Go straight to your one move.",
+    "followup": "The student replied. If right, confirm briefly and mark clear. If partly right, build on it. If off, shrink the task.",
+    "stuck": "The student is STILL stuck. Break the passage into two tiny steps.",
+    "success": "The student understands the concept now. Validate their realization briefly, confirm they've got it, and tell them they're ready to continue reading. Do NOT ask another question.",
 }
 
-# (what is going wrong, ideas the coach may choose ONE of)
 PROBLEMS = {
-    "vocab": ("The student does not know a word or phrase.",
-              "use clues from nearby sentences; skip the word and reread; swap in a simpler word that fits; look at word parts"),
-    "lost": ("The student read it but lost the main point.",
-             "say it back in ten words; ask who did what; cover it and retell it; split a long sentence at the commas"),
-    "connect": ("The student cannot see how this connects to the sentences before it.",
-                "compare with the sentence before; guess the link word (because, but, so, then); ask what changed between the two"),
-    "why": ("The student cannot tell why something happened; it is implied, not stated.",
-            "separate what the text says from what the student guesses; hunt for an earlier clue; predict, then check"),
+    "vocab": (
+        "The student does not know a word.", 
+        lambda p: f'The student is stuck on "{p}". Unless they asked for a direct definition, guide them to look at the surrounding context words or break down "{p}" with ONE simple question.'
+    ),
+    "lost": (
+        "The student lost the main point.", 
+        lambda p: f'The student lost the point around "{p}". Unless they asked for a summary, ask them a guiding question about who is speaking or what action just happened right here.'
+    ),
+    "connect": (
+        "The student cannot connect sentences.", 
+        lambda p: f'The student cannot connect ideas around "{p}". Ask them a guiding question pointing back to the sentence right before it.'
+    ),
+    "why": (
+        "The student cannot tell why something happened.", 
+        lambda p: f'The student is confused why "{p}" happened. Ask them a guiding question to hunt for an earlier clue in the text.'
+    ),
 }
 
+CLASSIFIER_RULES = """You are an intent classifier for a reading coach. 
+Classify the student's latest message into EXACTLY one of these three words:
+- "success": The student understands, got it right, or says they get it/understand.
+- "stuck": The student gives up, says they don't know, asks to be told directly, or is completely lost.
+- "followup": The student is answering normally, asking another question, or continuing the conversation.
+
+Output ONLY the exact category word. No punctuation, no explanation."""
+
+def classify_intent(message: str, target_passage: str = "") -> str:
+    if not message:
+        return "followup"
+    
+    prompt = f"Target word/passage: \"{target_passage}\"\nStudent message: \"{message}\"\nCategory:"
+    raw_output = ask_llama(CLASSIFIER_RULES, prompt, temperature=0.1, max_tokens=5)
+    
+    cleaned = raw_output.strip().lower()
+    if "success" in cleaned:
+        return "success"
+    if "stuck" in cleaned:
+        return "stuck"
+    return "followup"
 
 def build_hint_prompt(ask: Ask) -> str:
-    what, ideas = PROBLEMS.get(ask.problem or "", ("The student is confused.", "any helpful reading strategy"))
+    passage = ask.passage or "this part"
+    problem_key = ask.problem or "lost"
+    
+    what, get_instruction = PROBLEMS.get(problem_key, PROBLEMS["lost"])
+    task_instruction = get_instruction(passage) if callable(get_instruction) else get_instruction
+
     lines = []
+    lines.append("Target audience: Grade 7 student (keep language simple and clear).")
     if ask.goal:
-        lines.append(f"The student's reading goal: {ask.goal}")
+        lines.append(f"Goal: {ask.goal}")
     if ask.paragraph:
-        lines.append(f"The paragraph: {ask.paragraph[:2000]}")
-    lines.append(f"The part the student is confused by: {ask.passage[:600]}")
-    lines.append(f"What is going wrong: {what}")
-    lines.append(f"Ideas you may pick ONE from (vary them): {ideas}")
-
+        lines.append(f"Paragraph context: {ask.paragraph[:600]}")
+    lines.append(f"Target passage: \"{passage}\"")
+    lines.append(f"Problem type: {what}")
+    lines.append(f"Task: {task_instruction}")
+    
     if ask.history:
-        lines.append("\nConversation so far:")
-        for turn in ask.history[-8:]:
-            who = "Student" if turn.role == "student" else "Coach"
-            lines.append(f"{who}: {turn.text[:600]}")
+        lines.append("\nConversation History:")
+        for turn in ask.history:
+            speaker = "Coach" if turn.role == "coach" else "Student"
+            lines.append(f"{speaker}: {turn.text}")
+            
     if ask.message:
-        lines.append(f"\nThe student's latest message: {ask.message[:600]}")
-
-    lines.append("\n" + MODE_TEXT.get(ask.mode, MODE_TEXT["debug"]))
-    lines.append("Write only what the coach says next.")
+        lines.append(f"\nStudent (Latest): {ask.message[:300]}")
+        
+    lines.append(f"\nMode: {MODE_TEXT.get(ask.mode, MODE_TEXT['debug'])}")
+    lines.append("Write ONLY the coach's next response.")
     return "\n".join(lines)
 
-
 def generate_hint(ask: Ask) -> str:
-    response = ask_gemini(COACH_RULES, build_hint_prompt(ask), temperature=0.9, max_tokens=800)
-    text = (response.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned an empty reply.")
-    return text
+    return ask_llama(COACH_RULES, build_hint_prompt(ask), temperature=0.7, max_tokens=150)
 
 
 # =====================================================================
-# 2) QUIZ  (POST /quiz)  - the question-generation module
+# 2) QUIZ  (POST /quiz)
 # =====================================================================
 class QuizAsk(BaseModel):
     text: str
     goal: Optional[str] = None
-    n: int = 4
+    n: int = 3
 
-
-class QuizQuestion(BaseModel):
-    kind: str            # "Literal" or "Inference"
-    q: str
-    options: List[str]
-    answer: int          # 0-based index of the correct option
-    why: str
-    evidence: str        # a short phrase from the text that supports the answer
-
-
-class Quiz(BaseModel):
-    questions: List[QuizQuestion]
-
-
-QUIZ_RULES = """You write reading-comprehension quiz questions for students, using ONLY the text you are given.
-Rules:
-- Write exactly the number of multiple-choice questions you are asked for.
-- Mix the types: about half "Literal" (the answer is stated in the text) and about half "Inference" (the answer must be worked out from clues in the text).
-- Exactly 4 options per question, and only one clearly correct.
-- Wrong options must be believable: common misreadings, details from the text used the wrong way, or things that are true in general but not supported by this text. Never silly or obviously wrong.
-- Keep the correct option about the same length as the others.
-- Do not ask about facts that are not in the text. Never use "all of the above" or "none of the above".
-- "answer" is the 0-based index of the correct option.
-- "why" is one or two simple sentences explaining how the text supports the answer. For inference questions, name the clue. Do not refer to options by letter or number.
-- "evidence" is a short phrase copied exactly from the text that supports the answer.
-- Use clear, simple language.
-"""
-
+QUIZ_RULES = """You write JSON-formatted reading-comprehension multiple choice questions.
+You MUST output valid JSON matching this schema exactly:
+{
+  "questions": [
+    {
+      "kind": "Literal",
+      "q": "Question text here?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "answer": 0,
+      "why": "Explanation why.",
+      "evidence": "exact quote"
+    }
+  ]
+}
+Keep options balanced and write clear questions based ONLY on the text."""
 
 def generate_quiz(ask: QuizAsk) -> list:
-    n = max(2, min(ask.n, 8))
-    lines = [f"Write {n} questions."]
-    if ask.goal:
-        lines.append(f"The student's reading goal was: {ask.goal}. Make at least one question serve that goal if the text allows.")
-    lines.append("\nTEXT:\n" + ask.text[:8000])
-    response = ask_gemini(QUIZ_RULES, "\n".join(lines), temperature=0.5, max_tokens=4000, schema=Quiz)
-
-    quiz = response.parsed
-    if not isinstance(quiz, Quiz):
-        quiz = Quiz.model_validate_json(response.text or "{}")
-
+    n = max(2, min(ask.n, 5))
+    prompt = f"Create {n} reading comprehension questions based on this text:\n\n{ask.text[:4000]}\n\nReturn strictly valid JSON."
+    raw_response = ask_llama(QUIZ_RULES, prompt, temperature=0.3, max_tokens=1024)
+    
+    try:
+        # Extract json if wrapped in markdown code blocks
+        clean_json = raw_response
+        if "```json" in clean_json:
+            clean_json = clean_json.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean_json:
+            clean_json = clean_json.split("```")[1].split("```")[0].strip()
+            
+        data = json.loads(clean_json)
+        questions = data.get("questions", [])
+    except Exception as e:
+        print("JSON Parse Error:", e, "Raw output was:", raw_response)
+        raise RuntimeError("Model failed to output clean JSON for the quiz.")
+        
     cleaned = []
-    for q in quiz.questions:
-        if len(q.options) != 4 or len(set(q.options)) != 4 or not 0 <= q.answer < 4:
-            continue  # skip badly formed questions
-        correct = q.options[q.answer]
-        options = q.options[:]
-        random.shuffle(options)  # models like to put the right answer in the same spot
-        cleaned.append({
-            "kind": q.kind if q.kind in ("Literal", "Inference") else "Question",
-            "q": q.q,
-            "options": options,
-            "answer": options.index(correct),
-            "why": q.why,
-            "evidence": q.evidence,
-        })
+    for q in questions:
+        if "options" in q and len(q["options"]) == 4:
+            cleaned.append(q)
     if not cleaned:
-        raise RuntimeError("Gemini did not return any usable questions.")
+        raise RuntimeError("No valid questions parsed from model output.")
     return cleaned
 
 
@@ -234,74 +254,103 @@ def generate_quiz(ask: QuizAsk) -> list:
 class CheckinAsk(BaseModel):
     goal: Optional[str] = None
     text: str = ""
-    struggles: List[str] = []   # spots the student has already debugged
-    previous: List[str] = []    # check-in questions already asked
+    struggles: List[str] = []
 
-
-CHECKIN_RULES = """You are a reading coach briefly interrupting a student in the middle of reading.
-Write ONE short question (under 25 words) that makes them check their own understanding.
-Pick one kind: summarize so far in one sentence; connect what they read to their goal; predict what comes next;
-name the most confusing bit; explain a key idea in their own words.
-Use details from the text so the question fits THIS reading. Never give the answer.
-Do not repeat or closely copy a previous question. No greeting, no praise, no extra explanation. Plain words.
-Reply with the question only."""
-
+CHECKIN_RULES = """Write ONE short check-in question (under 25 words) testing understanding of the text. No greeting or extra text. Question only."""
 
 def generate_checkin(ask: CheckinAsk) -> str:
-    lines = []
-    if ask.goal:
-        lines.append(f"The student's reading goal: {ask.goal}")
-    if ask.struggles:
-        lines.append("Spots they found confusing: " + " | ".join(s[:150] for s in ask.struggles[-5:]))
-    if ask.previous:
-        lines.append("Questions already asked (do not repeat): " + " | ".join(p[:150] for p in ask.previous[-5:]))
-    lines.append("\nTEXT:\n" + ask.text[:6000])
-    response = ask_gemini(CHECKIN_RULES, "\n".join(lines), temperature=0.9, max_tokens=600)
-    text = (response.text or "").strip().strip('"')
-    if not text:
-        raise RuntimeError("Gemini returned an empty reply.")
-    return text
+    prompt = f"Text context: {ask.text[:3000]}\nGenerate a single checking question."
+    return ask_llama(CHECKIN_RULES, prompt, temperature=0.8, max_tokens=60)
 
 
 # =====================================================================
-# The addresses the widget calls
+# FastAPI Endpoints
 # =====================================================================
 @app.get("/")
 def health():
-    """Open http://localhost:8000 in a browser to check the server is running."""
-    return {
-        "status": "ok",
-        "gemini_connected": client is not None,
-        "model": GEMINI_MODEL if client else None,
-        "endpoints": ["/partner", "/quiz", "/checkin"],
-    }
-
-
-def _fail(what: str, e: Exception):
-    # The widget falls back to its offline demo if any of these fail.
-    print(f"Error while {what}:", repr(e))
-    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Check the server window for details.")
-
+    return {"status": "ok", "model": MODEL_NAME, "endpoints": ["/partner", "/quiz", "/checkin"]}
 
 @app.post("/partner")
 def partner(ask: Ask):
     try:
+        if ask.message:
+            ask.mode = classify_intent(ask.message)
+        else:
+            ask.mode = "debug"
+            
         return {"reply": generate_hint(ask)}
     except Exception as e:
-        _fail("writing a hint", e)
-
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/quiz")
 def quiz(ask: QuizAsk):
     try:
         return {"questions": generate_quiz(ask)}
     except Exception as e:
-        _fail("making the quiz", e)
-
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/checkin")
 def checkin(ask: CheckinAsk):
     try:
         return {"prompt": generate_checkin(ask)}
     except Exception as e:
-        _fail("writing a check-in", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# =====================================================================
+# Terminal Testing Interface
+# =====================================================================
+def run_terminal_loop():
+    print("\n" + "="*50)
+    print(" READING PARTNER: TERMINAL TEST MODE (Llama 3.2)")
+    print("="*50)
+    while True:
+        print("\nChoose action:")
+        print("  1. Test Hint (/partner)")
+        print("  2. Test Quiz (/quiz)")
+        print("  3. Test Check-in (/checkin)")
+        print("  4. Exit")
+        choice = input("\nEnter choice (1-4): ").strip()
+        
+        if choice == "1":
+            passage = input("Enter confusing passage text: ")
+            problem = input("Problem type (vocab / lost / connect / why): ") or "vocab"
+            ask_obj = Ask(mode="debug", problem=problem, passage=passage)
+            print("\n[Coach thinking...]")
+            print(f"\nCoach: {generate_hint(ask_obj)}")
+            
+        elif choice == "2":
+            text = input("Paste text for quiz generation: ")
+            ask_obj = QuizAsk(text=text, n=2)
+            print("\n[Generating Quiz...]")
+            try:
+                questions = generate_quiz(ask_obj)
+                for i, q in enumerate(questions, 1):
+                    print(f"\nQ{i} ({q.get('kind')}): {q.get('q')}")
+                    for idx, opt in enumerate(q.get('options')):
+                        print(f"  [{idx}] {opt}")
+                    print(f"  Answer Index: {q.get('answer')} | Why: {q.get('why')}")
+            except Exception as e:
+                print("Error:", e)
+                
+        elif choice == "3":
+            text = input("Paste reading text snippet: ")
+            ask_obj = CheckinAsk(text=text)
+            print("\n[Generating Check-in...]")
+            print(f"\nCheck-in Question: {generate_checkin(ask_obj)}")
+            
+        elif choice == "4":
+            print("Exiting terminal mode. Goodbye!")
+            break
+        else:
+            print("Invalid option. Try again.")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "terminal":
+        run_terminal_loop()
+    else:
+        import uvicorn
+        print("\nStarting FastAPI server for HTML widget on http://localhost:8000 ...")
+        print("To run terminal testing instead, use: python backend.py terminal\n")
+        uvicorn.run(app, host="127.0.0.1", port=8000)

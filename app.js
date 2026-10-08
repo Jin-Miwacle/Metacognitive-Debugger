@@ -11,7 +11,7 @@
    offline demo versions and labels them as demo.
    ===================================================================== */
 const CONFIG = {
-  API_BASE: null,
+  API_BASE: "http://localhost:8000",
   CHECKIN_EVERY_SEC: 90
 };
 

@@ -1,5 +1,11 @@
-fastapi
-uvicorn[standard]
-google-genai
-python-dotenv
-pydantic
+# unsloth/Llama-3.2-3B-Instruct-bnb-4bit
+fastapi>=0.100.0
+uvicorn>=0.20.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+torch>=2.0.0
+transformers>=4.45.0
+accelerate>=0.26.0
+safetensors>=0.4.0
+unsloth>=2024.0
+bitsandbytes>=0.41.0
