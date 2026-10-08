@@ -1,15 +1,8 @@
-/* =====================================================================
-   CONFIG
-   API_BASE is the address of your backend, e.g. "http://localhost:8000".
-   Leave it as null to use the built-in offline demo.
-
-   The widget calls three addresses on the backend:
-     POST /partner  -> { reply }      hints while the student is debugging
-     POST /quiz     -> { questions }  a quiz written from a text
-     POST /checkin  -> { prompt }     a short check-in question
-   If the backend can't be reached, the app quietly falls back to the
-   offline demo versions and labels them as demo.
-   ===================================================================== */
+/* CONFIG -- set API_BASE to your backend's URL, or leave it null to run
+   on the built-in offline demo. Three endpoints get called: POST /partner
+   (debug hints), POST /quiz (quiz questions), POST /checkin (check-in
+   prompts). If the backend's unreachable, the app quietly falls back to
+   offline demo answers. */
 const CONFIG = {
   API_BASE: null,
   CHECKIN_EVERY_SEC: 90
@@ -19,9 +12,8 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-/* Built-in practice readings -- plain text, blank line between paragraphs --
-   so both the Readings view and the Quizzes view (which has no reader open)
-   can use them without needing a teacher or the database at all. */
+/* Built-in practice readings: plain text, blank line between paragraphs.
+   Work in both Readings and Quizzes without a teacher or database. */
 const DEMO_READINGS = [
   {
     id: 'demo-lamp',
@@ -56,13 +48,14 @@ It was a recording of a school choir, slightly out of tune, dated the same year 
 ];
 const DEMO_READING_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3.6 4.8 7.4l7.2 3.8 7.2-3.8Z"/><path d="M4.8 7.4v9l7.2 3.8 7.2-3.8v-9"/><path d="M12 11.2v9"/></svg>`;
 
-/* ---------- State for the reading workspace (Goal / Debug / Check-in / Progress) ---------- */
+/* ---- Reading workspace state (Goal / Debug / Check-in / Progress) ---- */
 const state = {
   goal: null,            // { text, confidence }
   threads: [],           // debug sessions
   pending: null,         // current text selection { text, paragraph, range }
   selectionNote: '',
   checkin: { on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [] },
+  support: { score: 0, level: 'steady' },  // see nudgeSupport() below
   startedAt: Date.now(),
   log: [],
   user: null,                  // { id, role, full_name } once logged in
@@ -73,13 +66,54 @@ function logEvent(type, data = {}) {
   state.log.push({ t: new Date().toISOString(), type, ...data });
 }
 
-/* ---------- Saving real progress to the database ----------
-   A "session" is one student's attempt at one reading. It's created the
-   first time it's actually needed (setting a goal, debugging a spot,
-   answering a check-in) rather than the moment the reading opens, so
-   browsing a reading and leaving doesn't clutter the teacher's data.
-   If a save fails (offline, not logged in, etc.) we only warn in the
-   console; the student's session keeps working locally. */
+/* ---- Support level: makes goals/check-ins actually change the session ----
+   Score rises on a low-confidence goal, a "lost" check-in, or a stuck
+   thread; falls on "clear" or resolved. The level it maps to (steady /
+   closer / extra) speeds up check-ins, shows a banner, and rides along
+   to the backend as a hint. */
+function nudgeSupport(delta) {
+  const s = state.support;
+  s.score = Math.max(0, Math.min(6, s.score + delta));
+  const prevLevel = s.level;
+  s.level = s.score >= 4 ? 'extra' : s.score >= 2 ? 'closer' : 'steady';
+  if (s.level !== prevLevel) logEvent('support_level_change', { from: prevLevel, to: s.level, score: s.score });
+  updateSupportBanner();
+  if (currentTab() === 'monitor') renderCheckin();
+  if (currentTab() === 'stats') renderStats();
+}
+function effectiveCheckinSec() {
+  const base = state.checkin.everySec;
+  if (state.support.level === 'extra') return Math.max(30, Math.round(base * 0.5));
+  if (state.support.level === 'closer') return Math.max(30, Math.round(base * 0.75));
+  return base;
+}
+function updateSupportBanner() {
+  const el = $('#supportBanner'); if (!el) return;
+  const s = state.support;
+  if (s.level === 'steady') { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = s.level === 'extra'
+    ? 'Extra support: check-ins are more frequent while we work through this together.'
+    : 'Checking in a little more often — a few spots have been tricky.';
+}
+/* Quick word-overlap check against the goal (stopwords stripped) -- no
+   AI call, so it still works offline. */
+const STOPWORDS = new Set(['the','a','an','to','of','in','on','for','and','or','is','are','was','were','it','its','that','this','what','why','how','do','does','did','i','me','my','understand','about','with','as','be','at','so','not']);
+function keywordsOf(text) {
+  return new Set((text.toLowerCase().match(/[a-z']+/g) || []).filter(w => w.length > 2 && !STOPWORDS.has(w)));
+}
+function goalOverlapWord(passage) {
+  if (!state.goal) return null;
+  const gw = keywordsOf(state.goal.text), pw = keywordsOf(passage);
+  for (const w of pw) if (gw.has(w)) return w;
+  return null;
+}
+
+/* ---- Saving progress to the database ----
+   A "session" is one student's attempt at one reading, created on first
+   real use (a goal, a debug spot, a check-in) rather than the moment the
+   reading opens -- so just browsing doesn't clutter the teacher's data.
+   A failed save just warns to console; the session keeps working locally. */
 async function ensureSession() {
   if (state.session.id) return state.session.id;
   if (!state.user) return null;
@@ -117,7 +151,7 @@ async function dbInsertCheckin(prompt, level, answer) {
   if (error) console.warn('Could not save the check-in:', error.message);
 }
 
-/* ---------- Offline demo quiz (used only if the backend is unavailable, and only for the demo story) ---------- */
+/* ---- Offline demo quiz: backend-unavailable fallback, lamp story only ---- */
 const OFFLINE_QUIZ = [
   { kind: 'Literal', q: 'How many steps does Mara climb to reach the lamp?',
     options: ['Nineteen', 'Ninety-one', 'Ninety-nine', 'One hundred nine'], answer: 1,
@@ -130,7 +164,7 @@ const OFFLINE_QUIZ = [
     why: 'He had never met her, so he must have known her from something else: the old signal that the keepers use.' }
 ];
 
-/* ---------- The four kinds of trouble a student can pick ---------- */
+/* ---- The four debug problem types ---- */
 const PROBLEMS = {
   vocab:   { label: 'A word I don’t know', sub: 'Unfamiliar or tricky word' },
   lost:    { label: 'I lost the point',       sub: 'I read it but it didn’t land' },
@@ -138,7 +172,7 @@ const PROBLEMS = {
   why:     { label: 'Why did this happen?',   sub: 'Something is implied, not stated' }
 };
 
-/* ---------- Offline demo replies (used ONLY if the backend can't be reached) ---------- */
+/* ---- Offline demo replies: backend-unavailable fallback ---- */
 const DEMO_REPLIES = {
   vocab: [
     'Pick the one word that blocks you. Reread the sentence with that word skipped. Do you still get the gist? Then look at the sentences around it for clues: an example, a contrast, or a restatement.',
@@ -166,7 +200,7 @@ const DEMO_REPLIES = {
 };
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-/* ---------- Talking to the backend ---------- */
+/* ---- Backend calls ---- */
 async function callBackend(path, body) {
   if (!CONFIG.API_BASE) return null;
   try {
@@ -195,12 +229,12 @@ async function askPartner(payload) {
 function partnerPayload(mode, t, message) {
   return {
     mode, problem: t.problem, passage: t.text, paragraph: t.paragraph,
-    goal: state.goal && state.goal.text, message: message || null,
+    goal: state.goal && state.goal.text, support: state.support.level, message: message || null,
     history: t.msgs.filter(m => !m.typing).map(m => ({ role: m.from === 'you' ? 'student' : 'coach', text: m.text }))
   };
 }
 
-/* ---------- Offline check-in prompts (used only if the backend is unavailable) ---------- */
+/* ---- Offline check-in prompts: backend-unavailable fallback ---- */
 const OFFLINE_CHECKINS = [
   'Pause for a moment. In one sentence, what have you read so far?',
   'Is what you just read matching your goal? What is still missing?',
@@ -209,10 +243,10 @@ const OFFLINE_CHECKINS = [
   'Which sentence would you reread if you had to explain this to a friend?'
 ];
 
-/* ---------- Elements ---------- */
+/* ---- Elements ---- */
 const reader = $('#reader');
 
-/* ---------- Side-panel tabs (Goal / Debug / Check-in / Progress) ---------- */
+/* ---- Side-panel tabs (Goal / Debug / Check-in / Progress) ---- */
 function setTab(name) {
   $$('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
   $$('.panel').forEach(p => p.hidden = p.id !== 'p-' + name);
@@ -227,7 +261,7 @@ function updateBadges() {
   $('#monDot').hidden = !(has && currentTab() !== 'monitor');
 }
 
-/* ---------- Goal tab ---------- */
+/* ---- Goal tab ---- */
 function renderGoal() {
   const g = state.goal;
   const el = $('#p-goal');
@@ -257,13 +291,16 @@ function renderGoal() {
     $('#goalLine').textContent = 'Goal: ' + text;
     if (state.session.id) dbUpdateSession({ goal: text, confidence: conf });
     else ensureSession();
+    // Low confidence starts check-ins closer together; high confidence starts relaxed.
+    nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
     if (!state.checkin.on) startCheckins();
     renderGoal();
+    renderDebug();
     setTab('debug');
   });
 }
 
-/* ---------- Text selection -> Debug ---------- */
+/* ---- Text selection -> Debug ---- */
 let selTimer = null;
 document.addEventListener('selectionchange', () => {
   clearTimeout(selTimer);
@@ -287,16 +324,18 @@ function closestP(node) {
   return el ? el.closest('#reader p') : null;
 }
 
-/* ---------- Debug tab ---------- */
+/* ---- Debug tab ---- */
 function shorten(s, n = 90) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
 function renderDebug() {
   const el = $('#p-debug');
   const p = state.pending;
+  const goalWord = p ? goalOverlapWord(p.text) : null;
   const chooser = p ? `
     <div class="card">
       <p class="small" style="margin:0 0 4px">You selected</p>
       <blockquote class="quote" style="margin:0 0 10px; padding-left:10px; border-left:3px solid var(--accent); font-family:var(--serif); font-size:15px">${esc(shorten(p.text, 160))}</blockquote>
+      ${goalWord ? `<p class="small" style="margin:0 0 8px; color:var(--accent)">This looks related to your goal (“${esc(goalWord)}”) — worth sorting out before moving on.</p>` : ''}
       <p class="small" style="margin:0 0 8px">What is going wrong?</p>
       <div class="chips">
         ${Object.entries(PROBLEMS).map(([k, v]) => `<button type="button" data-problem="${k}">${v.label}<small>${v.sub}</small></button>`).join('')}
@@ -377,6 +416,7 @@ function setStatus(id, status) {
   t.status = status;
   if (t.mark) { t.mark.classList.remove('stuck'); t.mark.classList.toggle('resolved', status === 'resolved'); }
   logEvent(status === 'resolved' ? 'debug_resolved' : 'debug_stuck', { id });
+  nudgeSupport(status === 'resolved' ? -1 : 2);
   dbUpdateDebugStatus(t);
   renderDebug();
 }
@@ -385,6 +425,7 @@ async function markStuck(id) {
   t.status = 'stuck'; t.busy = true;
   if (t.mark) t.mark.classList.add('stuck');
   logEvent('debug_stuck', { id });
+  nudgeSupport(2);
   dbUpdateDebugStatus(t);
   const r = await askPartner(partnerPayload('stuck', t));
   t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
@@ -397,9 +438,9 @@ reader.addEventListener('click', e => {
   if (card) { card.scrollIntoView({ block: 'nearest' }); m.classList.add('active'); setTimeout(() => m.classList.remove('active'), 1200); }
 });
 
-/* ---------- Check-in tab (periodic monitoring prompts) ---------- */
+/* ---- Check-in tab ---- */
 function startCheckins() {
-  const c = state.checkin; c.on = true; c.nextAt = Date.now() + c.everySec * 1000;
+  const c = state.checkin; c.on = true; c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
 }
 async function fireCheckin() {
   const c = state.checkin;
@@ -408,6 +449,7 @@ async function fireCheckin() {
   if (currentTab() === 'monitor') renderCheckin();
   const d = await callBackend('/checkin', {
     goal: state.goal && state.goal.text,
+    support: state.support.level,
     text: reader.innerText.trim().slice(0, 6000),
     struggles: state.threads.map(t => t.text).slice(-5),
     previous: c.shown.slice(-5)
@@ -422,14 +464,18 @@ async function fireCheckin() {
 }
 function renderCheckin() {
   const c = state.checkin, el = $('#p-monitor');
+  const supportNote = state.support.level !== 'steady'
+    ? `<p class="small" style="color:var(--accent)">${state.support.level === 'extra' ? 'Extra support is on, so these are firing faster than your setting below.' : 'Firing a bit faster than your setting below, since a few spots have been tricky.'}</p>`
+    : '';
   el.innerHTML = `
     <h3>Check-ins while you read</h3>
-    <p class="lead">A short pause now and then helps you notice if you have drifted.</p>
+    <p class="lead">A short pause now and then helps you notice if you have drifted. How you answer changes how often the next one comes, and whether the Debug tab steps in.</p>
+    ${supportNote}
     <div class="switch">
       <div><b>Remind me</b><div class="small" id="cd"></div></div>
       <button type="button" id="cinToggle" role="switch" aria-checked="${c.on}" aria-label="Turn check-ins on or off"></button>
     </div>
-    <label class="f" for="cinEvery">How often</label>
+    <label class="f" for="cinEvery">How often (baseline)</label>
     <select id="cinEvery">
       ${[30, 60, 90, 180, 300].map(s => `<option value="${s}" ${s === c.everySec ? 'selected' : ''}>Every ${s < 60 ? s + ' seconds' : (s / 60) + (s === 60 ? ' minute' : ' minutes')}</option>`).join('')}
     </select>
@@ -438,7 +484,7 @@ function renderCheckin() {
     ${c.responses.length ? `<p class="small">${c.responses.length} check-in${c.responses.length > 1 ? 's' : ''} answered</p>` : ''}`;
 
   $('#cinToggle', el).addEventListener('click', () => { c.on ? (c.on = false) : startCheckins(); renderCheckin(); });
-  $('#cinEvery', el).addEventListener('change', e => { c.everySec = +e.target.value; if (c.on) c.nextAt = Date.now() + c.everySec * 1000; });
+  $('#cinEvery', el).addEventListener('change', e => { c.everySec = +e.target.value; if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000; });
   $('#askNow', el).addEventListener('click', () => { if (c.pending || c.fetching) renderCheckin(); else fireCheckin(); });
   drawCheckinCard();
   updateCountdown();
@@ -465,11 +511,14 @@ function drawCheckinCard() {
     c.responses.push({ level, prompt: c.pending, answer: answerText });
     logEvent('checkin_response', { level, prompt: c.pending, answer: answerText });
     dbInsertCheckin(c.pending, level, answerText);
+    nudgeSupport(level === 'clear' ? -1 : level === 'fuzzy' ? 1 : 2);
     c.pending = null;
-    if (c.on) c.nextAt = Date.now() + c.everySec * 1000;
+    if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
     renderCheckin();
     if (level !== 'clear') {
-      $('#cinCard').innerHTML = `<div class="card"><b>Try this</b><p style="margin:6px 0 0">Find the last sentence you understood, then the first one you didn't. Select that spot in the text and debug it.</p></div>`;
+      $('#cinCard').innerHTML = `<div class="card"><b>Try this</b><p style="margin:6px 0 0">Find the last sentence you understood, then the first one you didn't. Select that spot in the text and debug it.</p>
+        <div class="row" style="margin-top:8px"><button class="btn alt" type="button" id="goDebugFromCheckin">Open Debug tab</button></div></div>`;
+      const go = $('#goDebugFromCheckin'); if (go) go.addEventListener('click', () => setTab('debug'));
     }
   }));
 }
@@ -486,16 +535,25 @@ setInterval(() => {
   if (currentTab() === 'monitor') updateCountdown();
 }, 1000);
 
-/* ---------- Progress tab ---------- */
+/* ---- Progress tab ---- */
+const SUPPORT_LABEL = { steady: 'Steady — check-ins at your normal pace', closer: 'Checking in a bit closer together', extra: 'Extra support — check-ins are more frequent' };
 function renderStats() {
   const t = state.threads;
   const resolved = t.filter(x => x.status === 'resolved').length;
   const stuck = t.filter(x => x.status === 'stuck').length;
   const mins = Math.max(1, Math.round((Date.now() - state.startedAt) / 60000));
   const ci = state.checkin.responses;
+  const trend = ci.length ? `
+    <p class="small" style="margin:14px 0 4px">How check-ins have gone, in order:</p>
+    <div class="ci-trend">${ci.map(r => `<i class="ci-dot ${r.level}" title="${r.level}"></i>`).join('')}</div>` : '';
+  const g = state.goal;
+  const goalRating = !g ? '' : g.finalConfidence == null ? `
+    <div class="row" style="margin-top:10px"><button class="btn alt" id="rateGoalBtn" type="button">Rate how well you met your goal</button></div>` : `
+    <p class="small" style="margin-top:10px">Expected to understand it: <b>${g.confidence ?? '—'}/5</b> &middot; Actually did: <b>${g.finalConfidence}/5</b></p>`;
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
-    <p class="lead">${state.goal ? 'Goal: ' + esc(state.goal.text) : 'No goal set yet.'}</p>
+    <p class="lead">${g ? 'Goal: ' + esc(g.text) : 'No goal set yet.'}</p>
+    <p class="small">Support level: <b>${SUPPORT_LABEL[state.support.level]}</b></p>
     <div class="stats">
       <div class="stat"><b>${t.length}</b><span>Spots debugged</span></div>
       <div class="stat"><b>${resolved}</b><span>Cleared up</span></div>
@@ -503,13 +561,29 @@ function renderStats() {
       <div class="stat"><b>${ci.length}</b><span>Check-ins answered</span></div>
       <div class="stat" style="grid-column:1/-1"><b>${mins} min</b><span>Time in session</span></div>
     </div>
-    <div class="row">
+    ${trend}
+    ${goalRating}
+    <div class="row" style="margin-top:14px">
       <button class="btn" id="exportBtn" type="button">Download session data</button>
       <button class="btn alt" id="resetBtn" type="button">Start over</button>
     </div>
     <p class="small" style="margin-top:10px">The download is a JSON file of everything above. The teacher dashboard reads from the database directly.</p>`;
   $('#exportBtn').addEventListener('click', exportLog);
   $('#resetBtn').addEventListener('click', () => { if (confirm('Clear marks, goal, and progress for this session?')) resetSession(); });
+  const rateBtn = $('#rateGoalBtn');
+  if (rateBtn) rateBtn.addEventListener('click', () => {
+    $('#p-stats').insertAdjacentHTML('beforeend', `
+      <div class="card" id="goalRateCard" style="margin-top:10px">
+        <p class="small" style="margin:0 0 8px">How well did you end up understanding it?</p>
+        <div class="scale" id="finalConf">${[1,2,3,4,5].map(n => `<button type="button" data-n="${n}">${n}</button>`).join('')}</div>
+      </div>`);
+    $$('#finalConf button').forEach(b => b.addEventListener('click', () => {
+      g.finalConfidence = +b.dataset.n;
+      logEvent('goal_final_rating', { confidence: g.confidence, finalConfidence: g.finalConfidence });
+      if (state.session.id) dbUpdateSession({ final_confidence: g.finalConfidence });
+      renderStats();
+    }));
+  });
 }
 function exportLog() {
   const data = { exportedAt: new Date().toISOString(), goal: state.goal, events: state.log };
@@ -523,11 +597,13 @@ function resetSession() {
   $$('mark.dbg', reader).forEach(m => { const p = m.parentNode; while (m.firstChild) p.insertBefore(m.firstChild, m); p.removeChild(m); p.normalize(); });
   Object.assign(state, {
     goal: null, threads: [], pending: null, selectionNote: '',
-    session: { id: null },   // a new reading means a new database session
+    session: { id: null },   // fresh reading = fresh DB session
     startedAt: Date.now(), log: []
   });
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
+  Object.assign(state.support, { score: 0, level: 'steady' });
   $('#goalLine').textContent = 'No goal set yet';
+  updateSupportBanner();
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
 }
 
@@ -540,8 +616,7 @@ function paragraphsToHtml(raw) {
   return raw.split(/\n\s*\n/).map(p => `<p>${esc(p.replace(/\s*\n\s*/g, ' ').trim())}</p>`).join('');
 }
 
-/* ---------- Use your own text: one dialog, shared by the Readings and
-   Quizzes pickers. pasteTarget says which one is currently open. ---------- */
+/* ---- Paste/upload dialog, shared by Readings and Quizzes -- pasteTarget tracks which one opened it ---- */
 let pasteTarget = 'reader';
 function openPasteDialog(target) { pasteTarget = target; $('#pasteFileMsg').textContent = ''; $('#pasteDlg').showModal(); }
 $('#pasteBtn').addEventListener('click', () => openPasteDialog('reader'));
@@ -575,11 +650,8 @@ $('#pasteOk').addEventListener('click', () => {
   }
 });
 
-/* =====================================================================
-   Sidebar navigation: Readings <-> Quizzes <-> Settings
-   Each nav button's data-view matches a <section id="<name>View">, so
-   adding another section later just means adding another button.
-   ===================================================================== */
+/* Sidebar nav: each button's data-view matches a <section id="<name>View">,
+   so a new section just needs a new button. */
 function showView(name) {
   $$('.side-link').forEach(b => {
     const active = b.dataset.view === name;
@@ -593,12 +665,8 @@ function showView(name) {
 }
 $$('.side-link').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 
-/* =====================================================================
-   CLASSES: join a teacher's class with a short code. Readings in
-   Readings/Quizzes are limited (by the database's own rules) to
-   teachers whose class you've joined, so this is also how a student
-   unlocks their teacher's material.
-   ===================================================================== */
+/* CLASSES: join a teacher's class with a code. The database (not just the
+   UI) limits visible readings to teachers whose class you've joined. */
 async function renderClassesView() {
   const el = $('#classesPane');
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
@@ -613,9 +681,7 @@ async function renderClassesView() {
     return;
   }
 
-  // Look up each class's teacher name separately -- classes and profiles
-  // aren't directly linked as far as the database schema goes, so this
-  // can't be fetched in the same query.
+  // classes and profiles aren't linked in the schema, so teacher names need a separate lookup
   const teacherIds = [...new Set((memberships || []).map(m => m.classes && m.classes.teacher_id).filter(Boolean))];
   let teacherNames = {};
   if (teacherIds.length) {
@@ -681,10 +747,27 @@ function handleLogin(profile) {
   showReadingPicker();
 }
 
-/* =====================================================================
-   READINGS: library grid -> reader + side panel
-   ===================================================================== */
+/* READINGS: library grid -> reader + side panel.
+   QUIZZES reuses this same data but renders as a flat list instead of a
+   card grid (pass opts.kind = 'quiz') -- so the two pickers read as
+   different kinds of screens, not the same page with a different title. */
 function readingCardsHtml(readings, iconSvg, opts = {}) {
+  if (opts.kind === 'quiz') {
+    return `<div class="quiz-list">${readings.map(r => {
+      const words = r.body.trim().split(/\s+/).length;
+      const qCount = Math.max(3, Math.min(6, Math.round(words / 180)));
+      const cls = opts.demo ? 'quiz-row demo' : 'quiz-row';
+      const attr = opts.demo ? `data-demo="${r.id}"` : `data-id="${r.id}"`;
+      return `<button class="${cls}" ${attr}>
+        <span class="quiz-row-icon">${iconSvg}</span>
+        <span class="quiz-row-body">
+          <span class="quiz-row-title">${esc(r.title)}${opts.demo ? '<span class="quiz-row-badge">Built-in</span>' : ''}</span>
+          <span class="quiz-row-meta">About ${qCount} questions</span>
+        </span>
+        <span class="quiz-row-cta">Start quiz &rarr;</span>
+      </button>`;
+    }).join('')}</div>`;
+  }
   return `<div class="lib-grid">${readings.map(r => {
     const words = r.body.trim().split(/\s+/).length;
     const mins = Math.max(1, Math.round(words / 150));
@@ -700,9 +783,7 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
     </button>`;
   }).join('')}</div>`;
 }
-/* Built-in demo readings reuse the same card markup -- they're shaped
-   the same as a database reading ({id, title, body}) so one function
-   can render both. */
+/* Demo readings are shaped like {id, title, body} too, so the same card markup renders both. */
 function demoReadingObjs() { return DEMO_READINGS.map(d => ({ id: d.id, title: d.title, body: d.text })); }
 const BOOK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>`;
 
@@ -733,13 +814,13 @@ async function showReadingPicker() {
       <button class="btn alt" id="pickPaste" type="button">Paste or upload my own text</button>
     </div>`;
 
-  $$('.lib-card[data-id]', picker).forEach(b => b.addEventListener('click', async () => {
+  $$('button[data-id]', picker).forEach(b => b.addEventListener('click', async () => {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { picker.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
     enterReader({ title: r.title, byline: 'Added by your teacher', bodyHtml: paragraphsToHtml(r.body), readingId: r.id });
   }));
-  $$('.lib-card[data-demo]', picker).forEach(b => b.addEventListener('click', () => {
+  $$('button[data-demo]', picker).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
     enterReader({ title: d.title, byline: 'Built-in practice text', bodyHtml: paragraphsToHtml(d.text), readingId: null });
@@ -761,11 +842,8 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   renderGoal(); renderDebug();
 }
 
-/* =====================================================================
-   QUIZZES: its own top-level view, decoupled from the reading workspace.
-   Picking a reading here fetches its text directly from the database,
-   so a quiz can be taken without ever opening that reading in Readings.
-   ===================================================================== */
+/* QUIZZES: a separate top-level view. Fetches the reading's text directly,
+   so a quiz works without opening that reading in Readings first. */
 let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
 
 async function ensureQuizSession() {
@@ -799,29 +877,29 @@ async function renderQuizPicker() {
     .from('readings').select('id, title, body, created_at').order('created_at', { ascending: false });
 
   const teacherGrid = (!error && readings && readings.length)
-    ? readingCardsHtml(readings, QUIZ_ICON)
+    ? readingCardsHtml(readings, QUIZ_ICON, { kind: 'quiz' })
     : `<p class="small">${error ? 'Could not load readings right now.'
         : 'No readings from your classes yet. <a href="#" id="goToClassesQuiz">Join a class</a> to see what your teacher adds.'}</p>`;
 
   el.innerHTML = `
     <h1>Quizzes</h1>
-    <p class="hint">Pick a built-in practice text, something your teacher added, or paste your own.</p>
-    <h3 style="margin:22px 0 0">Built-in practice readings</h3>
-    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true })}
+    <p class="hint">Pick a reading to test yourself on &mdash; a built-in text, something your teacher added, or your own paste.</p>
+    <h3 style="margin:22px 0 0">Built-in practice texts</h3>
+    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true, kind: 'quiz' })}
     <h3 style="margin:28px 0 0">From your classes</h3>
     ${teacherGrid}
     <div class="row" style="margin-top:16px">
-      <button class="btn alt" id="quizPaste" type="button">Paste or upload my own text</button>
+      <button class="btn alt" id="quizPaste" type="button">Paste or upload a text to quiz</button>
     </div>`;
 
-  $$('.lib-card[data-id]', el).forEach(b => b.addEventListener('click', async () => {
+  $$('button[data-id]', el).forEach(b => b.addEventListener('click', async () => {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
     quizCtx = { readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
     renderQuizWorkspace();
   }));
-  $$('.lib-card[data-demo]', el).forEach(b => b.addEventListener('click', () => {
+  $$('button[data-demo]', el).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
     quizCtx = { readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };

@@ -23,7 +23,7 @@
   .new-reading { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
 </style>
 </head>
-<body>
+<body data-app="teacher">
 
 <div id="authOverlay" class="auth-wrap"></div>
 
@@ -31,7 +31,13 @@
   <div class="app-shell">
 
     <aside class="sidebar">
-      <div class="sidebar-brand">Reading Partner</div>
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove()"></span>
+        <span class="sidebar-brand-text">
+          Reading Partner
+          <span class="app-role-badge" id="appRoleBadge">Teacher</span>
+        </span>
+      </div>
       <nav class="sidebar-nav" aria-label="Main">
         <button class="side-link" type="button" data-view="dashboard" aria-current="page">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4.5" width="7" height="7" rx="1.4"/><rect x="13" y="4.5" width="7" height="7" rx="1.4"/><rect x="4" y="13.5" width="7" height="6" rx="1.4"/><rect x="13" y="13.5" width="7" height="6" rx="1.4"/></svg>
@@ -148,11 +154,9 @@ function showView(name) {
 }
 document.querySelectorAll('.side-link').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 
-/* =====================================================================
-   CLASSES: create a class (gets a join code), see who's joined, delete it
-   ===================================================================== */
+/* CLASSES: create a class (gets a join code), see who's joined, delete it */
 function makeJoinCode() {
-  // No 0/O or 1/I -- easy to read and say out loud, hard to mistype.
+  // skip 0/O and 1/I -- easy to read and say out loud, hard to mistype
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
@@ -204,8 +208,7 @@ async function loadClasses() {
     e.preventDefault();
     const name = document.getElementById('cName').value.trim();
     if (!name) return;
-    // Join codes are unique; collisions are rare but we retry a couple
-    // of times just in case two classes roll the same code.
+    // codes are unique; collisions are rare, but retry a few times just in case
     let lastError = null;
     for (let attempt = 0; attempt < 4; attempt++) {
       const { error } = await supa.from('classes').insert({ teacher_id: currentProfile.id, name, join_code: makeJoinCode() });
@@ -229,7 +232,10 @@ async function loadClasses() {
 async function startTeacherPage(profile) {
   currentProfile = profile;
   document.getElementById('userName').textContent = profile.full_name || 'Teacher';
-  if (profile.role === 'admin') document.getElementById('adminNavBtn').hidden = false;
+  if (profile.role === 'admin') {
+    document.getElementById('adminNavBtn').hidden = false;
+    document.getElementById('appRoleBadge').textContent = 'Admin';
+  }
   showView('dashboard');
 
   document.getElementById('newReadingForm').addEventListener('submit', async (e) => {
@@ -310,13 +316,10 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-/* =====================================================================
-   ADMIN: every account (with the ability to change a role) and every
-   class, across all teachers. Only reachable if the logged-in profile's
-   role is 'admin' -- the nav button stays hidden otherwise, and the
-   database's own rules (not just this page) are what actually keep a
-   non-admin from doing any of this even if they tried calling it directly.
-   ===================================================================== */
+/* ADMIN: every account (with a role dropdown) and every class, across all
+   teachers. Only reachable when the profile's role is 'admin' -- the nav
+   button stays hidden otherwise, and it's the database's own rules, not
+   just this page, that actually block a non-admin from calling it directly. */
 async function renderAdmin() {
   const el = document.getElementById('adminPane');
   el.innerHTML = '<h1>Admin</h1><p class="hint">Loading…</p>';
@@ -327,20 +330,21 @@ async function renderAdmin() {
   ]);
   if (cErr) { el.innerHTML = `<h1>Admin</h1><p class="small" style="color:var(--bug)">${escapeHtml(cErr.message)}</p>`; return; }
 
-  let users = rpcUsers, hasEmails = true;
+  let users = rpcUsers, hasEmails = true, emailError = '';
   if (uErr) {
-    // admin_list_users() is a newer addition -- if admin_emails_migration.sql
-    // hasn't been run yet, fall back to the plain profiles query so the
-    // page still works, just without emails.
+    // falls back to a plain profiles query (no emails) if the migration
+    // hasn't been run yet, or the RPC call fails for some other reason
+    console.warn('admin_list_users() failed, falling back to profiles only:', uErr);
+    emailError = uErr.message || String(uErr);
     const fallback = await supa.from('profiles').select('id, full_name, role').order('full_name');
     if (fallback.error) { el.innerHTML = `<h1>Admin</h1><p class="small" style="color:var(--bug)">${escapeHtml(fallback.error.message)}</p>`; return; }
     users = fallback.data; hasEmails = false;
   }
 
-  await renderAdminBody(users, classes, el, hasEmails);
+  await renderAdminBody(users, classes, el, hasEmails, emailError);
 }
 
-async function renderAdminBody(users, classes, el, hasEmails) {
+async function renderAdminBody(users, classes, el, hasEmails, emailError) {
   const nameById = {};
   (users || []).forEach(u => { nameById[u.id] = u.full_name || '(no name)'; });
 
@@ -377,7 +381,7 @@ async function renderAdminBody(users, classes, el, hasEmails) {
     <p class="hint">Every account and every class, across all teachers.</p>
 
     <h3 style="margin:22px 0 4px">Accounts (${(users || []).length})</h3>
-    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet &mdash; run admin_emails_migration.sql in Supabase to turn that on.</p>`}
+    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet &mdash; run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
     <div style="display:flex; flex-direction:column; gap:10px">${userRows || '<p class="small">No accounts found.</p>'}</div>
 
     <h3 style="margin:28px 0 10px">Classes (${(classes || []).length})</h3>

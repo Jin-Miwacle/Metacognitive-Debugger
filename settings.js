@@ -1,17 +1,12 @@
-/* =====================================================================
-   SETTINGS.JS
-   One "Account" page shared by the student page (index.html) and the
-   teacher page (teacher.html). It fills whatever empty element you give
-   it with: name, email, account type, a change-password form, and a
-   light/dark appearance switch.
+/* SETTINGS.JS -- the "Account" page shared by index.html and teacher.html.
+   Fills whatever element you give it with: name, email, account type, a
+   change-password form, and a light/dark switch.
 
-   Also defines showToast(), a small popup notification used to confirm
-   that something actually happened (saved, failed, etc). It's shared
-   so any page that loads this file can use it, not just Settings.
+   Also defines showToast(), a small popup used to confirm something just
+   happened (saved, failed) -- shared so any page can use it, not just
+   Settings.
 
-   Needs: `supa` (from auth.js) and a logged-in `profile`
-   object shaped like { id, role, full_name }.
-   ===================================================================== */
+   Needs `supa` (from auth.js) and a logged-in `profile` ({ id, role, full_name }). */
 function escSettings(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -20,11 +15,10 @@ function roleLabel(role) {
   return role ? role.charAt(0).toUpperCase() + role.slice(1) : '';
 }
 
-/* ---------- Toast popups ----------
-   A small message that slides in, sits for a few seconds, then fades
-   out on its own. kind is 'ok' (green) or 'bug' (red). Used for things
-   the system just did -- saved, failed, updated -- not for routine
-   status text. */
+/* ---- Toast popups ----
+   Slides in, sits a few seconds, fades out on its own. kind is 'ok'
+   (green) or 'bug' (red) -- for things the system just did, not
+   routine status text. */
 function showToast(message, kind = 'ok') {
   let host = document.getElementById('toastHost');
   if (!host) {
@@ -128,4 +122,16 @@ async function renderSettings(containerId, profile) {
 function setAppTheme(mode) {
   if (mode) document.documentElement.dataset.theme = mode;
   else delete document.documentElement.dataset.theme;
+  try {
+    if (mode) localStorage.setItem('theme', mode);
+    else localStorage.removeItem('theme');
+  } catch (e) { /* private browsing etc -- the switch still works for this page load */ }
 }
+// Reapply the saved theme immediately on load, so a refresh doesn't
+// flash back to "match device" before Settings even renders.
+(function applySavedTheme() {
+  try {
+    const saved = localStorage.getItem('theme');
+    if (saved) document.documentElement.dataset.theme = saved;
+  } catch (e) { /* private browsing etc -- falls back to match-device */ }
+})();

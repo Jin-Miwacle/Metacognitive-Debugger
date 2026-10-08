@@ -1,21 +1,24 @@
 :root {
-    --page: #eef1f6;
-    --sheet: #fbfcfe;
-    --ink: #1d2433;
-    --muted: #5d6779;
-    --line: #d5dbe6;
+    /* Warm "notebook paper" neutrals instead of cool SaaS gray */
+    --page: #f5f0e6;
+    --sheet: #fffdf9;
+    --ink: #2a2a24;
+    --muted: #6e6656;
+    --line: #e2d7bf;
 
-    --w-bg: #fbfcfe;
-    --w-panel: #f0f3f9;
-    --w-line: #d9deea;
-    --w-ink: #1d2433;
-    --w-muted: #626c7f;
-    --accent: #4b3fd6;
+    --w-bg: #fffdf9;
+    --w-panel: #f4eedd;
+    --w-line: #e6dcc3;
+    --w-ink: #2a2a24;
+    --w-muted: #746b58;
+
+    /* Chalkboard-green accent reads "classroom" rather than "app" */
+    --accent: #1f6f5c;
     --accent-ink: #ffffff;
-    --accent-soft: #e6e3fb;
-    --bug: #e2414f;
-    --ok: #17845c;
-    --warn: #b96a00;
+    --accent-soft: #e2efe8;
+    --bug: #c1472c;
+    --ok: #2f7d4f;
+    --warn: #b9770e;
 
     --serif: "Newsreader", Georgia, "Times New Roman", serif;
     --sans: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -25,17 +28,41 @@
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --page: #12151c; --sheet: #191d27; --ink: #e6e9f2; --muted: #98a1b5; --line: #2b3242;
-      --w-bg: #1e2330; --w-panel: #262c3b; --w-line: #333b4e; --w-ink: #e6e9f2; --w-muted: #9aa3b8;
-      --accent: #8f86ff; --accent-ink: #14112f; --accent-soft: #2d2a5a;
-      --bug: #ff6b78; --ok: #45c895; --warn: #f0a740;
+      --page: #1b1f1a; --sheet: #22281f; --ink: #edeee2; --muted: #a7ad97; --line: #343c30;
+      --w-bg: #22281f; --w-panel: #272e23; --w-line: #3a4334; --w-ink: #edeee2; --w-muted: #a0a791;
+      --accent: #6fcab0; --accent-ink: #0f2420; --accent-soft: #223b33;
+      --bug: #e98567; --ok: #7fd79a; --warn: #e0b15c;
     }
   }
   :root[data-theme="dark"] {
-    --page: #12151c; --sheet: #191d27; --ink: #e6e9f2; --muted: #98a1b5; --line: #2b3242;
-    --w-bg: #1e2330; --w-panel: #262c3b; --w-line: #333b4e; --w-ink: #e6e9f2; --w-muted: #9aa3b8;
-    --accent: #8f86ff; --accent-ink: #14112f; --accent-soft: #2d2a5a;
-    --bug: #ff6b78; --ok: #45c895; --warn: #f0a740;
+    --page: #1b1f1a; --sheet: #22281f; --ink: #edeee2; --muted: #a7ad97; --line: #343c30;
+    --w-bg: #22281f; --w-panel: #272e23; --w-line: #3a4334; --w-ink: #edeee2; --w-muted: #a0a791;
+    --accent: #6fcab0; --accent-ink: #0f2420; --accent-soft: #223b33;
+    --bug: #e98567; --ok: #7fd79a; --warn: #e0b15c;
+  }
+
+  /* ---- Teacher / Admin theme: a cooler, more "workspace" palette so this
+     app doesn't read as the same product as the student reader. Scoped to
+     body[data-app="teacher"], set on teacher.html only.
+
+     The light/dark switch sets data-theme on <html>, not <body> -- so these
+     overrides have to key off the html ancestor (:root[data-theme=...]),
+     same as the global rules above. Checking body[data-theme=...] directly
+     looked right but never matched anything, which let the sidebar/page
+     drift out of sync with the rest of the theme. ---- */
+  body[data-app="teacher"] {
+    --page: #f1f4f9; --sheet: #ffffff; --line: #dde3ee;
+    --accent: #35527a; --accent-ink: #ffffff; --accent-soft: #e3eaf5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) body[data-app="teacher"] {
+      --page: #141a24; --sheet: #1b2330; --line: #2b3545;
+      --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
+    }
+  }
+  :root[data-theme="dark"] body[data-app="teacher"] {
+    --page: #141a24; --sheet: #1b2330; --line: #2b3545;
+    --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
   }
 
   * { box-sizing: border-box; }
@@ -56,7 +83,7 @@
   }
   .ghost:hover { border-color: var(--accent); }
 
-  /* ---------- App shell: left sidebar + main content area ---------- */
+  /* ---- App shell: left sidebar + main content area ---- */
   .app-shell {
     display: flex;
     min-height: 100vh;
@@ -75,8 +102,22 @@
     height: 100vh;
   }
   .sidebar-brand {
+    display: flex; align-items: center; gap: 10px;
     font-family: var(--serif); font-weight: 600; font-size: 18px;
     padding: 4px 10px 22px; letter-spacing: -0.01em;
+  }
+  /* Logo slot: drop a logo.png next to index.html/teacher.html and it
+     appears automatically; until then this shows a plain initial mark
+     so the brand row never looks broken. */
+  .brand-mark {
+    position: relative; flex: none; width: 32px; height: 32px; border-radius: 9px;
+    background: var(--accent-soft); color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; font-size: 15px; font-weight: 700;
+  }
+  .brand-mark-fallback { line-height: 1; }
+  .brand-mark img {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block;
   }
   .sidebar-nav {
     display: flex; flex-direction: column; gap: 2px;
@@ -102,6 +143,28 @@
   }
   .sidebar-foot .ghost { width: 100%; text-align: center; }
 
+  /* Teacher/Admin sidebar: dark, so the two apps are tellable apart at a
+     glance even before you read anything on the page. */
+  body[data-app="teacher"] .sidebar { background: #1b2432; border-right-color: #1b2432; }
+  body[data-app="teacher"] .sidebar-brand { color: #f2f5fa; }
+  body[data-app="teacher"] .brand-mark { background: #2a3648; color: #8fb0dd; }
+  body[data-app="teacher"] .side-link { color: #a6b1c4; }
+  body[data-app="teacher"] .side-link:hover { background: #242f40; color: #f2f5fa; }
+  body[data-app="teacher"] .side-link.active { background: #2a3648; color: #8fb0dd; }
+  body[data-app="teacher"] .side-link.active svg { color: #8fb0dd; }
+  body[data-app="teacher"] .sidebar-foot { border-top-color: #2a3648; }
+  body[data-app="teacher"] .sidebar-user { color: #f2f5fa; }
+  body[data-app="teacher"] .sidebar-foot .ghost { border-color: #39455a; color: #c3cbdb; }
+  body[data-app="teacher"] .sidebar-foot .ghost:hover { border-color: #8fb0dd; color: #f2f5fa; }
+
+  /* Small "Teacher" / "Admin" pill under the brand name -- set from the
+     logged-in profile's role in teacher.html's own script. */
+  .sidebar-brand-text { display: flex; flex-direction: column; gap: 4px; }
+  .app-role-badge {
+    font-family: var(--sans); font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    color: #8fb0dd; background: #2a3648; border-radius: 999px; padding: 2px 8px; align-self: flex-start;
+  }
+
   .main-area {
     flex: 1; min-width: 0;
   }
@@ -112,7 +175,7 @@
     padding: 36px clamp(18px, 4vw, 44px) 10vh;
   }
 
-  /* ---------- Reader workspace: article + docked side panel ---------- */
+  /* ---- Reader workspace: article + docked side panel ---- */
   .reader-toolbar {
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
     padding: 14px clamp(16px, 4vw, 40px);
@@ -168,6 +231,13 @@
   .sp-head b { font-size: 15px; font-weight: 700; }
   .sp-head span { font-size: 12px; color: var(--w-muted); }
 
+  /* Shown only while the support level is above "steady" -- the visible
+     sign that goals/check-ins are actually changing session behavior. */
+  .support-banner {
+    margin: 0; padding: 8px 16px; font-size: 12px; font-weight: 600;
+    background: var(--accent-soft); color: var(--accent); border-bottom: 1px solid var(--w-line);
+  }
+
   .tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--w-line); }
   .tab {
     flex: 1; background: transparent; border: 0; padding: 8px 4px 9px; font-size: 13px; font-weight: 600;
@@ -207,6 +277,17 @@
   .btn.alt:hover { border-color: var(--accent); filter: none; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Small inline action buttons (e.g. "Delete" in a row card). Plain
+     elements before this had no styling at all, so they fell back to the
+     browser's default button face -- pale text on a pale face, which
+     disappears against a dark background. */
+  .tiny {
+    flex: none; padding: 6px 12px; font-size: 13px; font-weight: 600;
+    border-radius: 8px; border: 1px solid var(--w-line); background: var(--w-bg); color: var(--w-ink);
+  }
+  .tiny.danger { border-color: var(--bug); color: var(--bug); background: transparent; }
+  .tiny.danger:hover { background: var(--bug); color: #fff; }
 
   .scale { display: flex; gap: 6px; }
   .scale button {
@@ -267,6 +348,13 @@
   .stat b { display: block; font-size: 22px; font-weight: 700; }
   .stat span { font-size: 12px; color: var(--w-muted); }
 
+  /* One dot per check-in, colored by how it went, in order answered */
+  .ci-trend { display: flex; flex-wrap: wrap; gap: 5px; }
+  .ci-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .ci-dot.clear { background: var(--ok); }
+  .ci-dot.fuzzy { background: var(--warn); }
+  .ci-dot.lost { background: var(--bug); }
+
   /* Small status dot, e.g. the unread check-in indicator on the Check-in tab */
   .dot {
     position: absolute; top: 2px; right: 14px; width: 8px; height: 8px; border-radius: 50%;
@@ -282,7 +370,7 @@
     * { transition: none !important; }
   }
 
-  /* ---------- Narrower screens: sidebar collapses to icon rail, side panel stacks below the reading ---------- */
+  /* ---- Narrower screens: sidebar collapses to icon rail, side panel stacks below the reading ---- */
   @media (max-width: 920px) {
     .reader-grid { grid-template-columns: 1fr; }
     .reader-col { padding-bottom: 20px; }
@@ -299,7 +387,7 @@
     #reader { font-size: 18px; }
   }
 
-/* ---------- Login / signup screen ---------- */
+/* ---- Login / signup screen ---- */
 .auth-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
   padding: 24px; background: var(--page);
@@ -329,14 +417,20 @@
 .auth-err:empty { display: none; }
 .auth-submit { width: 100%; margin-top: 20px; padding: 12px 0; font-size: 15px; border-radius: 10px; }
 
-/* ---------- Simple row card (classes list, admin lists) ---------- */
+/* ---- Simple row card (classes list, admin lists) ---- */
 .reading-row-card {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; align-items: center; gap: 12px;
   background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px;
 }
 .reading-row-card b { font-family: var(--serif); font-size: 15px; }
+/* Fixed-width label column so every row's control (select / button)
+   lines up in a column, instead of drifting left/right with name length. */
+.reading-row-card > div:first-child { flex: 1 1 auto; min-width: 0; }
+.reading-row-card select,
+.reading-row-card > .tiny { flex: 0 0 auto; }
+.reading-row-card select { width: 200px; max-width: 45%; }
 
-/* ---------- Reading / quiz library (card grid) ---------- */
+/* ---- Reading / quiz library (card grid) ---- */
 .lib-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px;
   margin-top: 18px;
@@ -361,13 +455,43 @@
 .lib-card-snippet { font-size: 13px; color: var(--muted); line-height: 1.4; flex: 1; }
 .lib-card-meta { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; margin-top: 2px; }
 
-/* ---------- Side-panel nav: icon + label tabs ---------- */
+/* ---- Quiz library (a list, not a card grid -- reads as a different
+   kind of screen from Readings, not the same page with a new title) ---- */
+.quiz-list { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+.quiz-row {
+  display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  background: var(--sheet); border: 1px solid var(--line); border-left: 3px solid transparent;
+  border-radius: 10px; padding: 12px 14px;
+  transition: border-color .15s, background .15s;
+}
+.quiz-row:hover { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--sheet)); }
+.quiz-row:disabled { opacity: .55; }
+.quiz-row-icon {
+  width: 34px; height: 34px; flex: none; color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, var(--sheet));
+  border-radius: 9px; display: grid; place-items: center; padding: 7px;
+}
+.quiz-row-icon svg { width: 100%; height: 100%; }
+.quiz-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: break-word; }
+.quiz-row-title { font-weight: 600; font-size: 15px; color: var(--ink); }
+.quiz-row-badge {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, var(--sheet)); border-radius: 999px;
+  padding: 1px 7px; margin-left: 8px; vertical-align: middle;
+}
+.quiz-row-meta { font-size: 12.5px; color: var(--muted); }
+.quiz-row-cta { flex: none; font-size: 13px; font-weight: 700; color: var(--warn); white-space: nowrap; }
+@media (max-width: 480px) {
+  .quiz-row-cta { display: none; } /* the whole row is clickable, so this is decoration at this width */
+}
+
+/* ---- Side-panel nav: icon + label tabs ---- */
 .tabs .tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px 8px; position: relative; }
 .tab-icon { width: 19px; height: 19px; }
 .tabs .tab span { font-size: 11px; }
 .tabs .tab .dot { top: 2px; right: 14px; }
 
-/* ---------- Toast popups: a quiet "this just happened" confirmation ---------- */
+/* ---- Toast popups: a quiet "this just happened" confirmation ---- */
 #toastHost {
   position: fixed; right: 18px; bottom: 18px; z-index: 2000;
   display: flex; flex-direction: column; gap: 8px;
@@ -388,7 +512,7 @@
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes toast-out { to { opacity: 0; transform: translateY(8px); } }
 
-/* ---------- Responsive polish ---------- */
+/* ---- Responsive polish ---- */
 @media (max-width: 640px) {
   #toastHost { left: 16px; right: 16px; align-items: stretch; }
   .toast { max-width: none; }

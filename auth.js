@@ -1,16 +1,10 @@
-/* =====================================================================
-   AUTH.JS
-   Handles signing up, logging in, and figuring out if someone is a
-   student, teacher, or admin. Used by both index.html (students) and
-   teacher.html (teachers).
+/* AUTH.JS -- signup, login, and figuring out if someone's a student,
+   teacher, or admin. Shared by index.html and teacher.html.
 
-   How it's used on a page:
-     1. Make sure the page has a <div id="authOverlay"></div> and the
-        content to protect has id="appRoot" (see index.html / teacher.html).
-     2. Include config.js, the Supabase script, then this file.
-     3. Call  initAuth({ allow: ['student'], onReady: user => {...} })
-        allow: which roles may use THIS page. Others get redirected.
-   ===================================================================== */
+   To use on a page: have a <div id="authOverlay"> and an id="appRoot"
+   for the protected content, load config.js + the Supabase script +
+   this file, then call initAuth({ allow: ['student'], onReady: user => {...} }).
+   allow = which roles may use this page; others get redirected. */
 
 const supa = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -64,8 +58,7 @@ async function initAuth({ allow, onReady }) {
   const loginForm = document.getElementById('loginForm');
   const signupForm = document.getElementById('signupForm');
 
-  // Switching tabs shows a completely separate, empty form each time,
-  // so nothing typed in one carries over to the other.
+  // Each tab has its own form, so switching never carries typed text over.
   document.querySelectorAll('.auth-tab').forEach(t => t.addEventListener('click', () => {
     const mode = t.dataset.m;
     document.querySelectorAll('.auth-tab').forEach(x => x.setAttribute('aria-selected', String(x === t)));
@@ -108,7 +101,7 @@ async function initAuth({ allow, onReady }) {
       const { data, error } = await supa.auth.signUp({ email, password });
       if (error) throw error;
       if (!data.session) { err.textContent = 'Check your email to confirm your account, then log in.'; return; }
-      // Create the matching row in "profiles" with the chosen role.
+      // give the new account a matching row in "profiles"
       const { error: pErr } = await supa.from('profiles').insert({ id: data.user.id, role, full_name: name });
       if (pErr) throw pErr;
       showSignupSuccess(name, role, () => afterLogin(data.user.id));
@@ -131,9 +124,8 @@ async function initAuth({ allow, onReady }) {
   async function afterLogin(userId) {
     let { data: profile, error } = await supa.from('profiles').select('*').eq('id', userId).single();
 
-    // Repair step: an interrupted signup can leave a login with no matching
-    // "profiles" row. Instead of a dead end, create one now (as a student
-    // by default) so the person isn't locked out.
+    // An interrupted signup can leave a login with no "profiles" row --
+    // rather than a dead end, make one now (defaulting to student).
     if (error && error.code === 'PGRST116') {
       const { data: { user } } = await supa.auth.getUser();
       const fallbackName = (user && user.email) ? user.email.split('@')[0] : 'User';
@@ -162,7 +154,7 @@ async function initAuth({ allow, onReady }) {
     }, 1200);
   }
 
-  // Already logged in from before? Skip straight to the app.
+  // already logged in? skip straight to the app
   const { data: { session } } = await supa.auth.getSession();
   if (session) await afterLogin(session.user.id);
 }

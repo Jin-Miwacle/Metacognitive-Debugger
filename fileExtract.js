@@ -1,22 +1,14 @@
-/* =====================================================================
-   FILEEXTRACT.JS
-   Pulls plain text out of an uploaded PDF, Word (.docx), or PowerPoint
-   (.pptx) file, right in the browser -- no backend needed. The result
-   comes back as plain text with paragraphs separated by a blank line,
-   the same format the "paste your own text" box already expects.
+/* FILEEXTRACT.JS -- pulls plain text out of an uploaded PDF, Word, or
+   PowerPoint file, right in the browser, no backend needed. Comes back
+   as plain text with blank lines between paragraphs, same shape as the
+   "paste your own text" box.
 
-   Needs these library scripts loaded first (see index.html / teacher.html):
-     pdf.js     -> window.pdfjsLib
-     mammoth.js -> window.mammoth
-     JSZip      -> window.JSZip
-   If one of those didn't load (e.g. no internet when the page opened),
-   that one file type just won't work; the others still will.
+   Needs pdf.js, mammoth.js, and JSZip loaded first (index.html /
+   teacher.html). If one didn't load, that file type just won't work --
+   the others still will.
 
-   Note: this reads the text that's already embedded in the file. A
-   PDF that's just a photo/scan of a page (no selectable text) has no
-   embedded text to find, so nothing will come out of it -- that needs
-   OCR, which this does not do.
-   ===================================================================== */
+   Only reads text already embedded in the file -- a scanned/photographed
+   PDF has none to find, and this doesn't do OCR. */
 
 if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc =
