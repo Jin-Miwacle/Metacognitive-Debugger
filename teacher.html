@@ -163,12 +163,48 @@ function makeJoinCode() {
   return code;
 }
 
+/* Labels matching the student-side wording in app.js, so a teacher sees
+   the same words a student picked, not raw database values. */
+const DEBUG_PROBLEM_LABEL = { vocab: 'A word they didn’t know', lost: 'Lost the point', connect: 'Ideas didn’t connect', why: 'Why did this happen?', unspecified: 'Other' };
+const CHECKIN_LEVEL_LABEL = { clear: 'I follow it', fuzzy: 'A bit fuzzy', lost: 'I’m lost', unspecified: 'Other' };
+
+/* A compact "where are they getting stuck" summary for one class --
+   just enough to spot a pattern at a glance, not a full report. Shows
+   nothing if the class has no debug/check-in data yet. */
+function classInsightsHtml(debugRows, checkinRows) {
+  if (!debugRows.length && !checkinRows.length) return '';
+  const bars = (rows, labels) => {
+    const total = rows.reduce((sum, r) => sum + Number(r.total), 0);
+    if (!total) return '';
+    return rows.map(r => {
+      const pct = Math.round((Number(r.total) / total) * 100);
+      const label = labels[r.problem || r.level] || labels.unspecified;
+      return `<div class="insight-bar">
+        <span class="insight-bar-label">${escapeHtml(label)}</span>
+        <span class="insight-bar-track"><span class="insight-bar-fill" style="width:${pct}%"></span></span>
+        <span class="insight-bar-count">${r.total}</span>
+      </div>`;
+    }).join('');
+  };
+  const debugHtml = bars(debugRows, DEBUG_PROBLEM_LABEL);
+  const checkinHtml = bars(checkinRows, CHECKIN_LEVEL_LABEL);
+  return `<div class="class-insights">
+    ${debugHtml ? `<div><p class="small" style="margin:0 0 6px"><b>Where they're getting stuck</b></p>${debugHtml}</div>` : ''}
+    ${checkinHtml ? `<div><p class="small" style="margin:10px 0 6px"><b>How check-ins have gone</b></p>${checkinHtml}</div>` : ''}
+  </div>`;
+}
+
 async function loadClasses() {
   const el = document.getElementById('classesPane');
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
 
-  const { data: classes, error } = await supa
-    .from('classes').select('*').eq('teacher_id', currentProfile.id).order('created_at', { ascending: false });
+  const [{ data: classes, error }, { data: debugStats }, { data: checkinStats }] = await Promise.all([
+    supa.from('classes').select('*').eq('teacher_id', currentProfile.id).order('created_at', { ascending: false }),
+    supa.rpc('teacher_debug_stats'),
+    supa.rpc('teacher_checkin_stats')
+  ]);
+  // Both RPCs are a newer addition (teacher_dashboard_migration.sql) -- an
+  // older database without them just means no insights card, not a crash.
 
   if (error) {
     el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">${escapeHtml(error.message)}</p>`;
@@ -177,6 +213,8 @@ async function loadClasses() {
 
   const cards = await Promise.all((classes || []).map(async (c) => {
     const { count } = await supa.from('class_members').select('student_id', { count: 'exact', head: true }).eq('class_id', c.id);
+    const myDebug = (debugStats || []).filter(r => r.class_id === c.id);
+    const myCheckins = (checkinStats || []).filter(r => r.class_id === c.id);
     return `<div class="reading-card" data-class="${c.id}">
       <div class="row-top">
         <div>
@@ -185,6 +223,7 @@ async function loadClasses() {
         </div>
         <button class="tiny danger" type="button" data-act="delete">Delete</button>
       </div>
+      ${classInsightsHtml(myDebug, myCheckins)}
     </div>`;
   }));
 

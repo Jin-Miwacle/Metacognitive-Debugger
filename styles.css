@@ -524,3 +524,17 @@
   .card .row button { width: 100%; }
 }
 .sidebar-user, .lib-card-title, .lib-card-snippet { overflow-wrap: break-word; }
+
+/* ---- Teacher class insights: a quick "where are they stuck" readout ---- */
+.class-insights {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.insight-bar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-bottom: 4px; }
+.insight-bar-label { flex: 0 0 150px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insight-bar-track { flex: 1; height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.insight-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.insight-bar-count { flex: 0 0 20px; text-align: right; color: var(--muted); font-weight: 600; }
+@media (max-width: 480px) {
+  .insight-bar-label { flex-basis: 110px; }
+}

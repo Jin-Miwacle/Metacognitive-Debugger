@@ -145,6 +145,15 @@ async function dbUpdateDebugStatus(t) {
   const { error } = await supa.from('debug_events').update({ status: t.status }).eq('id', t.dbId);
   if (error) console.warn('Could not update the debug spot:', error.message);
 }
+/* Saves the actual back-and-forth for this debug thread -- needs
+   hint_transcript_migration.sql run once. Without it the column doesn't
+   exist and this just fails quietly, same as any other save error. */
+async function dbSaveTranscript(t) {
+  if (!t.dbId) return;
+  const transcript = t.msgs.filter(m => !m.typing).map(m => ({ from: m.from, text: m.text, demo: !!m.demo }));
+  const { error } = await supa.from('debug_events').update({ transcript }).eq('id', t.dbId);
+  if (error) console.warn('Could not save the hint transcript:', error.message);
+}
 async function dbInsertCheckin(prompt, level, answer) {
   const sid = await ensureSession(); if (!sid) return;
   const { error } = await supa.from('checkin_events').insert({ session_id: sid, prompt, level, answer });
@@ -392,7 +401,7 @@ function startDebug(problem) {
   dbInsertDebugEvent(t);
   renderDebug();
   askPartner(partnerPayload('debug', t))
-    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, demo: r.demo }]; renderDebug(); });
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, demo: r.demo }]; renderDebug(); dbSaveTranscript(t); });
 }
 function wrapRange(range, id) {
   const mark = document.createElement('mark');
@@ -410,6 +419,7 @@ async function sendFollowup(id, message) {
   const r = await askPartner(payload);
   t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
   renderDebug();
+  dbSaveTranscript(t);
 }
 function setStatus(id, status) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
@@ -430,6 +440,7 @@ async function markStuck(id) {
   const r = await askPartner(partnerPayload('stuck', t));
   t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
   renderDebug();
+  dbSaveTranscript(t);
 }
 reader.addEventListener('click', e => {
   const m = e.target.closest('mark.dbg'); if (!m) return;
