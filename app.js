@@ -44,6 +44,16 @@ Nobody suggested she explain herself again after that. The following spring, thr
 She looked him up before she decided what to do with any of it. Mr. Oyelaran had taught music at the school across the street until it closed in the nineties; the library had no record of him after that. Still, she ordered a new needle, cleaned the turntable herself over a weekend, and played the first record in the box just to test it.
 
 It was a recording of a school choir, slightly out of tune, dated the same year the label was written. Priya didn't know whose voice was whose. She reshelved the player in the front room anyway, with a handwritten card of her own: "Ask at the desk to listen."`
+  },
+  {
+    id: 'demo-noli',
+    title: 'Kabanata 1',
+    text:
+`Isang marangyang salu-salo ang ipinag-anyaya ni Don Santiago de los Santos na higit na popular sa taguring Kapitan Tiago.  Ang handaan ay gagawin sa kanyang bahay na nasa daang Anluwage na karatig ng Ilog-Binundok.
+
+Ang paayaya ay madaling kumalat sa lahat ng sulok ng Maynila.  Bawat isa ay gustong dumalo sapagkat ang mayamang Kapitan ay kilala bilang isang mabuting tao, mapagbigay at laging bukas ang palad sa mga nangangailangan.  Dahil dito, ang iba ay nababalino kung ano ang isusuot at sasabihin sa mismong araw ng handaan.
+
+Nang gabing iyon dagsa ang mga panauhin na gaya ng dapat asahan.  Puno ang bulwagan.  Ang nag-iistima sa mgta bisita ay si Tiya Isabel, isang matandang babae na pinsan ng may-bahay.  Kabilang sa mga bisita sina Tinyente ng guardia civil, Pari Sibyla, ang Kura paroko ng Binundok, si Padre Damaso na madaldal at mahahayap ang mga salita at dalawang Paisano.  Ang isa ay kararating lamang sa Pilipinas.`
   }
 ];
 const DEMO_READING_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3.6 4.8 7.4l7.2 3.8 7.2-3.8Z"/><path d="M4.8 7.4v9l7.2 3.8 7.2-3.8v-9"/><path d="M12 11.2v9"/></svg>`;
