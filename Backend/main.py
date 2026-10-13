@@ -5,10 +5,15 @@ The widget (index.html) talks to three addresses on this server:
     POST /partner   ->   { "reply": "..." }       a hint while the student is debugging
     POST /quiz      ->   { "questions": [ ... ] } a quiz written from the student's text
     POST /checkin   ->   { "prompt": "..." }      a short mid-reading check-in question
+
+Usage:
+    1. On terminal, enter: huggingface-cli login
+    2. Complete steps given and paste token
+    3. Run python main.py
+    4. Open index.html to test the website    
 """
 import json
 import os
-import random
 from typing import List, Optional
 import re
 
@@ -17,33 +22,60 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoModelForSeq2SeqLM
+from pathlib import Path
+from peft import PeftModel
+import contextlib
 
-# MODEL_NAME = os.getenv("SEALLMS_MODEL", "seallms_v3_1_5b_chat_finetuned")
-MODEL_NAME = "aisingapore/Gemma-SEA-LION-v3-9B-IT-GGUF"
-FILENAME = "Gemma-SEA-LION-v3-9B-IT-Q4_K_M.gguf"
 
+# Load SEALION Model
+SEALION_MODEL_NAME = os.getenv("SEALION_MODEL", "aisingapore/Gemma-SEA-LION-v3-9B-IT")
+ADAPTER_PATH = os.getenv(
+    "SEALION_ADAPTER",
+    str(Path(__file__).resolve().parent / "checkpoints" / "socratic-lora" / "best"),
+)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-print(f"Loading local model {MODEL_NAME} (this may take a moment)...")
+print(f"Loading base model {SEALION_MODEL_NAME} + adapter {ADAPTER_PATH} (this may take a moment)...")
 quantization_config = BitsAndBytesConfig(
     load_in_4bit=True,
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_quant_type="nf4"
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
 )
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer = AutoTokenizer.from_pretrained(SEALION_MODEL_NAME, use_fast=False)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
+    SEALION_MODEL_NAME,
     quantization_config=quantization_config,
     device_map={"": 0},
-    low_cpu_mem_usage=True
+    low_cpu_mem_usage=True,
 )
 
+model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+model.eval()
+
 model.generation_config.max_length = None
-print("Model loaded successfully!")
+print("SEALION Model loaded successfully!")
+
+# Load T5 Model
+# T5_MODEL_NAME = "valhalla/t5-base-qg-hl"
+
+# print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
+
+# qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
+# qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+
+# qg_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# qg_model.to(qg_device)
+# qg_model.eval()
+
+# print("T5 question-generation model loaded successfully!")
 
 app = FastAPI(title="Reading Partner backend")
-app = FastAPI(title="Reading Partner backend (SeaLLMs v3 1.5B Chat)")
 
 # Lets the widget (a different address) talk to this backend.
 # For the real launch, replace "*" with your real website address.
@@ -54,58 +86,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def ask_llama(system_rules: str, prompt: str, history: Optional[List['Turn']] = None, *, temperature: float, max_tokens: int) -> str:
+_SYSTEM_SUPPORTED = None
+
+def _system_supported():
+    global _SYSTEM_SUPPORTED
+    if _SYSTEM_SUPPORTED is None:
+        try:
+            out = tokenizer.apply_chat_template(
+                [{"role": "system", "content": "SYSMARKER"}, {"role": "user", "content": "u"}],
+                tokenize=False)
+            _SYSTEM_SUPPORTED = "SYSMARKER" in out
+        except Exception:
+            _SYSTEM_SUPPORTED = False
+        print(f"[ask_llama] chat template supports system role: {_SYSTEM_SUPPORTED}")
+    return _SYSTEM_SUPPORTED
+
+def _normalize(messages):
+    system = messages[0]["content"] if messages and messages[0]["role"] == "system" else None
+    turns = [m for m in messages if m["role"] != "system" and m["content"].strip()]
+    if not turns or turns[0]["role"] != "user":
+        turns.insert(0, {"role": "user", "content": "(The student selected part of the text and asked for help.)"})
+    merged = []
+    for m in turns:
+        if merged and merged[-1]["role"] == m["role"]:
+            merged[-1]["content"] += "\n\n" + m["content"]
+        else:
+            merged.append(dict(m))
+    if system is None:
+        return merged
+    if _system_supported():
+        return [{"role": "system", "content": system}] + merged
+    merged[0]["content"] = system + "\n\n---\n\n" + merged[0]["content"]
+    return merged
+
+def ask_llama(system_rules: str, prompt: str, history: Optional[List["Turn"]] = None, *,
+              temperature: float, max_tokens: int, use_adapter: bool = True) -> str:
+    
     messages = [{"role": "system", "content": system_rules}]
-    
-    # Inject conversation history natively using proper roles
-    if history:
-        for turn in history:
-            role = "assistant" if turn.role == "coach" else "user"
-            messages.append({"role": role, "content": turn.text})
-            
-    # Add current prompt as final user message
+    for turn in history or []:
+        messages.append({"role": "assistant" if turn.role == "coach" else "user", "content": turn.text})
     messages.append({"role": "user", "content": prompt})
-    
-    try:
-        formatted_prompt = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-    except Exception:
-        formatted_prompt = f"<|im_start|>system\n{system_rules}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    inputs = tokenizer(formatted_prompt, return_tensors="pt")
-    
-    input_ids = inputs["input_ids"].to("cuda")
-    attention_mask = inputs["attention_mask"].to("cuda")
-    
+ 
+    formatted_prompt = tokenizer.apply_chat_template(
+        _normalize(messages), tokenize=False, add_generation_prompt=True)
+ 
+    inputs = tokenizer(formatted_prompt, return_tensors="pt", add_special_tokens=False).to(model.device)
+ 
+    stop_ids = [tokenizer.eos_token_id]
+    end_of_turn = tokenizer.convert_tokens_to_ids("<end_of_turn>")
+    if end_of_turn is not None and end_of_turn != tokenizer.unk_token_id:
+        stop_ids.append(end_of_turn)
+ 
     do_sample = temperature > 0.0
-    outputs = model.generate(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        max_new_tokens=max_tokens,
-        temperature=temperature if do_sample else None,
-        do_sample=do_sample,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
-    
-    generated_ids = outputs[0][input_ids.shape[-1]:]
-    response_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    return response_text.strip()
-
+    adapter_off = (not use_adapter) and hasattr(model, "disable_adapter")
+    ctx = model.disable_adapter() if adapter_off else contextlib.nullcontext()
+    with ctx, torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature if do_sample else None,
+            do_sample=do_sample,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=stop_ids,
+        )
+    generated_ids = outputs[0][inputs["input_ids"].shape[-1]:]
+    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+ 
 
 # =====================================================================
 # 1) HINTS  (POST /partner)
 # =====================================================================
 class Turn(BaseModel):
-    role: str   # "student" or "coach"
+    role: str                      # "student" or "coach"
     text: str
-
+    mode: Optional[str] = None 
 
 class Ask(BaseModel):
     mode: str = "debug"            # "debug" (first hint), "followup", or "stuck"
@@ -118,80 +172,155 @@ class Ask(BaseModel):
 
 COACH_RULES = """You are a warm, encouraging reading coach for Grade 7 students. 
 
-CRITICAL BEHAVIORAL MODES (Follow these strictly):
-1. CHECK THE TARGET PASSAGE: If the student's reply matches or contains the target word/passage, they are RIGHT. You MUST validate them briefly in your own words, confirm they've got it, and tell them they can move on. DO NOT ask another question.
-2. IF THE STUDENT SAYS "I don't know", "hindi ko alam", "just tell me", or asks what something means: STOP asking questions. Give a clear, direct, simple explanation immediately.
-3. OTHERWISE (Socratic Mode): Ask ONE simple guiding question to help them think.
+Each request contains an "Instruction for this turn". The backend has already decided what kind of turn this is. Follow that instruction exactly, even if it means not asking a question.
 
 General Rules:
 - OUTPUT ONLY YOUR SPOKEN RESPONSE AS THE COACH. Do NOT write "Coach:", "Student:", or simulate any dialogue back-other.
-- LANGUAGE RULE: Match the language of the target passage or student message. If the word or text is in Filipino/Tagalog (e.g., 'handaan'), your entire response MUST be in Filipino or natural Taglish. Never reply in English to a Filipino input.
+- Reply ONLY in the language named in the request.
 - Keep your response under 45 words.
 - Never use stock praise like "Good job."
 - Never invent facts, characters, or plot points outside of the provided context.
 - Use plain, easy-to-understand words."""
 
-CLASSIFIER_RULES = """You are an intent classifier for a reading coach. 
-Classify the student's latest message into EXACTLY one of these three words:
-- "success": The student understands, got it right, or says they get it/understand.
-- "stuck": The student gives up, says they don't know, asks to be told directly, or is completely lost.
-- "followup": The student is answering normally, asking another question, or continuing the conversation.
+CLASSIFIER_RULES = """You are an intent classifier for a reading coach. You get the target word/passage, the coach's last message, and the student's reply.
 
+Classify the student's reply into EXACTLY one of these three words:
+- "success": The student shows they understand the target (gives a correct meaning, a correct translation such as a Filipino synonym, or correctly confirms a correct explanation).
+- "stuck": The student gives up, says they don't know, asks to be told directly, or is completely lost.
+- "followup": Anything else: a wrong or partial answer, another question, or continuing the conversation.
+ 
 Output ONLY the exact category word. No punctuation, no explanation."""
 
-def classify_intent(message: str, target_passage: str = "") -> str:
+_EN_REQUEST = re.compile(r"\b(in english|english please|english po|sa english|sa ingles|ingles po)\b", re.I)
+_FIL_REQUEST = re.compile(r"\b(in tagalog|in filipino|tagalog please|filipino please|sa tagalog|sa filipino|tagalog po)\b", re.I)
+_FIL_HINT = re.compile(r"\b(ang|ng|mga|sa|ay|na|hindi|ko|po|ito|siya|nila|kami|tayo|ba)\b", re.I)
+
+def language_request(text):
+    if not text:
+        return None
+    if _EN_REQUEST.search(text):
+        return "en"
+    if _FIL_REQUEST.search(text):
+        return "fil"
+    return None
+
+def pick_language(ask):
+    texts = [t.text for t in ask.history if t.role == "student"] + [ask.message or ""]
+    for text in reversed(texts):
+        lang = language_request(text)
+        if lang:
+            return lang
+    sample = f"{ask.passage} {ask.paragraph}"
+    return "fil" if len(_FIL_HINT.findall(sample)) >= 2 else "en"
+
+def stuck_level(ask):
+    earlier = sum(1 for t in ask.history if t.role == "coach" and t.mode == "stuck")
+    return earlier + 1
+
+_PROMPT_LEAK = re.compile(
+    r"(<start_of_turn>|<end_of_turn>|^\s*(user|model|assistant)\s*$|Context paragraph:|"
+    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal:)",
+    re.I | re.M,
+)
+ 
+def clean_reply(text):
+    m = _PROMPT_LEAK.search(text)
+    if m:
+        text = text[:m.start()]
+    text = re.sub(r'^(Coach|Assistant|AI|Reading Partner)\s*:\s*', '', text.strip(), flags=re.IGNORECASE)
+    return text.strip()
+ 
+def last_coach_line(ask):
+    for t in reversed(ask.history):
+        if t.role == "coach":
+            return t.text
+    return ""
+ 
+def classify_intent(message, target_passage="", last_coach=""):
     if not message:
         return "followup"
+    prompt = (f"Target word/passage: \"{target_passage}\"\n"
+              f"Coach's last message: \"{last_coach[:300]}\"\n"
+              f"Student reply: \"{message[:300]}\"\nCategory:")
     
-    prompt = f"Target word/passage: \"{target_passage}\"\nStudent message: \"{message}\"\nCategory:"
-    raw_output = ask_llama(CLASSIFIER_RULES, prompt, history=None, temperature=0.1, max_tokens=5)
-    
+    raw_output = ask_llama(CLASSIFIER_RULES, prompt, history=None, temperature=0.1, max_tokens=5, use_adapter=False)
     cleaned = raw_output.strip().lower()
+
     if "success" in cleaned:
         return "success"
     if "stuck" in cleaned:
         return "stuck"
     return "followup"
 
-def build_hint_prompt(ask: Ask) -> str:
+_QUESTION_BY_PROBLEM = {
+    "vocab":   "ONE simple question to help them figure out what \"{p}\" means using context or everyday experience.",
+    "lost":    "ONE simple question about what is happening here.",
+    "connect": "ONE simple question pointing back to the sentence right before it.",
+    "why":     "ONE simple question to look for an earlier clue in the text.",
+}
+
+def mode_instruction(ask):
+    p = ask.passage or "this part"
+    question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
+ 
+    if ask.mode == "success":
+        return (f"The student has understood \"{p}\". Confirm they are right in your own words, "
+                f"restate the meaning in ONE short sentence using the context, and tell them they "
+                f"are ready to move on to more passages. Do NOT ask any question.")
+    if ask.mode == "stuck":
+        level = stuck_level(ask)
+        if level == 1:
+            return (f"The student is stuck. Do NOT give the answer or explain \"{p}\". Point them to the "
+                    f"exact sentence in the context that holds the clue (quote a few words from it), "
+                    f"then ask ONE easier question, such as a yes/no or either/or question.")
+        if level == 2:
+            return (f"The student is still stuck. Do NOT give the full answer. Explain ONE piece of the "
+                    f"idea behind \"{p}\" using the context, then ask the student to finish the idea.")
+        return (f"The student has been stuck several times. Now explain \"{p}\" clearly and simply using "
+                f"the context, with one everyday example. End by asking them to say it in their own words.")
+    if ask.mode == "repeat":
+        return "The student asked you to change language. Repeat your last question in that language. Nothing else."
+    if ask.mode == "followup":
+        return (f"Respond briefly to what the student just said (don't say whether it's right yet), "
+                f"then ask {question}")
+    return f"Ask the student {question}"
+ 
+def build_hint_prompt(ask, lang):
     passage = ask.passage or "this part"
-    problem_key = ask.problem or "lost"
-    
     lines = []
     if ask.goal:
         lines.append(f"Reading goal: {ask.goal}")
-
     if ask.paragraph:
         lines.append(f"Context paragraph: {ask.paragraph[:600]}")
     else:
-        lines.append(f"Context: None provided. Treat '{passage}' as a general vocabulary term without inventing external characters or plot points.")
-        
-    lines.append(f"The student is stuck on: \"{passage}\".")
-    
-    if problem_key == "vocab":
-        lines.append(f"Instruction: Ask the student ONE simple question to help them figure out what \"{passage}\" means using context or everyday experience.")
-    elif problem_key == "lost":
-        lines.append(f"Instruction: Ask the student ONE simple question about what is happening here.")
-    elif problem_key == "connect":
-        lines.append(f"Instruction: Ask the student ONE simple question pointing back to the sentence right before it.")
-    elif problem_key == "why":
-        lines.append(f"Instruction: Ask the student ONE simple question to look for an earlier clue in the text.")
-    else:
-        lines.append(f"Instruction: Ask the student ONE simple guiding question.")
-        
+        lines.append(f"Context: None provided. Treat '{passage}' as a general vocabulary term "
+                     f"without inventing external characters or plot points.")
+    lines.append(f"The student is working on: \"{passage}\".")
     if ask.message:
-        lines.append(f"\nStudent's latest reply: \"{ask.message[:300]}\"")
-        
-    lines.append("\nOutput ONLY your single spoken response as the coach. Do not write any labels, lists, or explanations.")
+        lines.append(f"Student's latest reply: \"{ask.message[:300]}\"")
+    lines.append(f"Language for your reply: {'English' if lang == 'en' else 'Filipino (natural Taglish is OK)'}")
+    lines.append(f"\nInstruction for this turn: {mode_instruction(ask)}")
+    lines.append("\nOutput ONLY your single spoken response as the coach.")
     return "\n".join(lines)
-
-
-def generate_hint(ask: Ask) -> str:
-    prompt = build_hint_prompt(ask)
-    raw_response = ask_llama(COACH_RULES, prompt, history=ask.history, temperature=0.7, max_tokens=150)
-    
-    cleaned_response = re.sub(r'^(Coach|Assistant|AI|Reading Partner)\s*:\s*', '', raw_response, flags=re.IGNORECASE)
-    return cleaned_response.strip()
+ 
+SUCCESS_FALLBACK = {
+    "en":  "That's right! You've figured out what \"{p}\" means. You're ready to move on to more passages.",
+    "fil": "Tama! Nakuha mo na ang ibig sabihin ng \"{p}\". Handa ka nang magpatuloy sa susunod na babasahin.",
+}
+ 
+def generate_hint(ask):
+    lang = pick_language(ask)
+    prompt = build_hint_prompt(ask, lang)
+    temperature = 0.3 if ask.mode in ("success", "repeat") else 0.7
+    raw_response = ask_llama(COACH_RULES, prompt, history=ask.history, temperature=temperature, max_tokens=150)
+    reply = clean_reply(raw_response)
+ 
+    if ask.mode == "success" and "?" in reply:
+        reply = SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part")
+    if not reply:
+        reply = ("Let's look at that part of the text again. What do you notice?" if lang == "en"
+                 else "Balikan natin ang bahaging iyon ng teksto. Ano ang napapansin mo?")
+    return reply
 
 
 # =====================================================================
@@ -200,72 +329,529 @@ def generate_hint(ask: Ask) -> str:
 class QuizAsk(BaseModel):
     text: str
     goal: Optional[str] = None
-    n: int = 4
+    n: int = 3
 
-
-class QuizQuestion(BaseModel):
-    kind: str            # "Literal" or "Inference"
-    q: str
-    options: List[str]
-    answer: int          # 0-based index of the correct option
-    why: str
-    evidence: str        # a short phrase from the text that supports the answer
-
-
-class Quiz(BaseModel):
-    questions: List[QuizQuestion]
-
-
-QUIZ_RULES = """You write reading-comprehension quiz questions for students, using ONLY the text you are given.
-Rules:
-- Write exactly the number of multiple-choice questions you are asked for.
-- Mix the types: about half "Literal" (the answer is stated in the text) and about half "Inference" (the answer must be worked out from clues in the text).
-- Exactly 4 options per question, and only one clearly correct.
-- Wrong options must be believable: common misreadings, details from the text used the wrong way, or things that are true in general but not supported by this text. Never silly or obviously wrong.
-- Keep the correct option about the same length as the others.
-- Do not ask about facts that are not in the text. Never use "all of the above" or "none of the above".
-- "answer" is the 0-based index of the correct option.
-- "why" is one or two simple sentences explaining how the text supports the answer. For inference questions, name the clue. Do not refer to options by letter or number.
-- "evidence" is a short phrase copied exactly from the text that supports the answer.
-- Use clear, simple language.
-"""
+QUIZ_RULES = """You write JSON-formatted reading-comprehension multiple choice questions.
+You MUST output valid JSON matching this schema exactly:
+{
+  "questions": [
+    {
+      "kind": "Literal",
+      "q": "Question text here?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "answer": 0,
+      "why": "Explanation why.",
+      "evidence": "exact quote"
+    }
+  ]
+}
+Keep options balanced and write clear questions based ONLY on the text."""
 
 
 def generate_quiz(ask: QuizAsk) -> list:
     n = max(2, min(ask.n, 5))
-    prompt = f"Create {n} reading comprehension questions based on this text:\n\n{ask.text[:4000]}\n\nReturn strictly valid JSON."
-    raw_response = ask_llama(QUIZ_RULES, prompt, history=None, temperature=0.3, max_tokens=1024)
-    
+    passage = ask.text.strip()[:4000]
+
+    if not passage:
+        raise ValueError("The passage cannot be empty.")
+
+    def parse_json_response(raw: str) -> dict:
+        clean = raw.strip()
+
+        if "```json" in clean:
+            clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+
+        return json.loads(clean)
+
+    # STEP 1: Use Llama to identify answer phrases in the passage.
+    # T5 requires an answer phrase to be highlighted in the context.
+    answer_prompt = f"""
+Read the passage and select exactly {n} DISTINCT answer targets for a
+reading-comprehension quiz.
+
+QUESTION MIX:
+- If n = 2, select 1 literal target and 1 inferential target.
+- If n >= 3, select approximately half literal and half inferential targets.
+- Include at least one inferential target whenever the passage supports it.
+
+LITERAL:
+- The answer is directly stated in the passage.
+- The student can find the answer without drawing a conclusion.
+
+INFERENTIAL:
+- The answer requires connecting clues or drawing a reasonable conclusion.
+- Choose targets that support questions about causes, motivations,
+  implications, or lessons.
+- Do not label a directly stated fact as inferential merely to meet the mix.
+
+TARGET SELECTION:
+- Copy each answer target exactly from the passage.
+- For literal targets, select a meaningful fact or detail.
+- For inferential targets, select a passage detail that provides evidence
+  for a conclusion or interpretation.
+- Select different parts of the passage.
+- Do not repeat answer targets.
+- Do not invent facts.
+
+Return valid JSON only, using this format:
+{{
+  "items": [
+    {{
+      "kind": "Literal",
+      "answer": "exact phrase copied from the passage"
+    }},
+    {{
+      "kind": "Inferential",
+      "answer": "exact phrase copied from the passage"
+    }}
+  ]
+}}
+
+Return exactly {n} items if the passage supports that many distinct targets.
+
+Passage:
+{passage}
+"""
+
+    raw_answers = ask_llama(
+        "Select answer phrases from the supplied passage. Return valid JSON only.",
+        answer_prompt,
+        temperature=0.2,
+        max_tokens=500
+    )
+
     try:
-        clean_json = raw_response
-        if "```json" in clean_json:
-            clean_json = clean_json.split("```json")[1].split("```")[0].strip()
-        elif "```" in clean_json:
-            clean_json = clean_json.split("```")[1].split("```")[0].strip()
-            
-        data = json.loads(clean_json)
-        questions = data.get("questions", [])
+        answer_data = parse_json_response(raw_answers)
+        answer_items = answer_data.get("items", [])
     except Exception as e:
-        print("JSON Parse Error:", e, "Raw output was:", raw_response)
-        raise RuntimeError("Model failed to output clean JSON for the quiz.")
-        
+        raise RuntimeError(
+            f"Could not parse answer phrases from Llama: {e}"
+        )
+
+    # STEP 2: Use T5 to generate the actual question wording.
+    generated = []
+    used_questions = set()
+    used_answers = set()
+
+    for item in answer_items:
+        if len(generated) >= n:
+            break
+
+        answer = str(item.get("answer", "")).strip()
+        kind = str(item.get("kind", "Literal")).strip()
+
+        if not answer:
+            continue
+
+        # Find the exact phrase in the original passage, ignoring case.
+        start = passage.lower().find(answer.lower())
+        if start == -1:
+            continue
+
+        exact_answer = passage[start:start + len(answer)]
+
+        if exact_answer.lower() in used_answers:
+            continue
+
+        highlighted = (
+            passage[:start]
+            + "<hl> "
+            + exact_answer
+            + " <hl>"
+            + passage[start + len(exact_answer):]
+        )
+
+        prompt = f"generate question: {highlighted}"
+
+        # inputs = qg_tokenizer(
+        #     prompt,
+        #     return_tensors="pt",
+        #     truncation=True,
+        #     max_length=512
+        # )
+        # inputs = {key: value.to(qg_device) for key, value in inputs.items()}
+
+        # with torch.inference_mode():
+        #     outputs = qg_model.generate(
+        #         **inputs,
+        #         max_new_tokens=64,
+        #         num_beams=4
+        #     )
+
+        # question = qg_tokenizer.decode(
+        #     outputs[0],
+        #     skip_special_tokens=True
+        # ).strip()
+
+        # if not question or question.lower() in used_questions:
+        #     continue
+
+        # used_answers.add(exact_answer.lower())
+        # used_questions.add(question.lower())
+
+        # generated.append({
+        #     "kind": kind,
+        #     "q": question,
+        #     "correct_text": exact_answer
+        # })
+
+    if not generated:
+        raise RuntimeError(
+            "T5 could not generate questions from the selected answer phrases."
+        )
+
+    print(f"[Quiz] Requested questions: {n}")
+    print(f"[Quiz] Answer targets returned: {len(answer_items)}")
+    print(f"[Quiz] T5 questions generated: {len(generated)}")
+    print(f"[Quiz] T5 questions: {generated}")
+
+    # STEP 3: Use Llama to create the answer options and supporting details.
+    # Keep the question wording generated by T5 unchanged.
+    questions_for_llama = [
+        {
+            "kind": item["kind"],
+            "q": item["q"],
+            "correct_answer": item["correct_text"]
+        }
+        for item in generated
+    ]
+
+    
+    options_prompt = f"""
+Create {len(questions_for_llama)} reading-comprehension multiple-choice questions.
+
+PASSAGE:
+{passage}
+
+QUESTIONS AND CORRECT ANSWERS:
+{json.dumps(questions_for_llama, ensure_ascii=False, indent=2)}
+
+RULES:
+
+GENERAL:
+- Use ONLY facts supported by the passage.
+- Keep every supplied question exactly unchanged.
+- Preserve the supplied "kind".
+- Generate exactly 4 answer choices per question.
+- Ensure exactly one option is correct based on the passage.
+- Include the correct answer exactly once.
+- Create 3 plausible but clearly incorrect distractors.
+- Make all 4 choices distinct. Do not repeat ideas or use synonyms.
+- Never use "None of the above" or "All of the above".
+- Set "answer" to the zero-based index of the correct option.
+- Verify that the selected answer index points to the correct option.
+
+ANSWER CHOICES:
+- Write the correct option as a direct answer to the question.
+- Prefer a concise answer of 2–8 words when grammatically appropriate.
+- Do not simply copy a sentence or clause from the passage.
+- Identify what the question is asking before writing the answer.
+- For "How" questions, describe the process or method.
+- For "What helps" questions, identify the thing that provides the help.
+- For "Why" questions, state the reason.
+- For "What causes" questions, identify the cause.
+- Preserve the original meaning of the supplied correct answer.
+- The correct option must answer the question independently.
+- Do not use a passage sentence as an option merely because it contains
+  the correct information.
+- Evidence must remain a separate, exact quote from the passage.
+- The correct option must preserve the meaning of the supplied correct answer.
+- Do not make the correct option unnecessarily long just to match the passage word for word.
+- Rewrite the supplied correct answer into a concise answer of 2–8 words.
+- The correct option must directly answer the question, not reproduce
+  a complete sentence from the passage.
+- Do not copy the correct option verbatim into the evidence field.
+- Evidence must be an exact quote from the passage, preferably a
+  complete supporting clause or sentence.
+- The evidence should provide context that supports the answer.
+- All distractors must relate to the subject of the question and
+  passage, but must be demonstrably incorrect.
+- Do not introduce unrelated concepts that are absent from the passage.
+- Avoid using a fragment from the passage as an answer when a concise,
+  grammatically complete answer can be written.
+- Never create two options that express the same action or fact.
+- Distractors must be clearly different from the correct answer.
+- Do not change the subject of an action in a way that makes
+  two options partially correct.
+- Ensure the correct answer index points to the option that
+  best answers the question.
+- Generate exactly 4 DISTINCT answer options for every question.
+- Exactly ONE option must be correct.
+- The other 3 options must be plausible but incorrect based on the passage.
+- NEVER copy the correct answer into multiple options.
+- NEVER repeat an option or use minor wording changes that preserve the same meaning.
+- Keep options concise and directly answer the question.
+- If the supplied correct answer is a long sentence, shorten it while preserving its essential meaning.
+- Make each distractor different from the correct answer and from the other distractors.
+- Before returning the JSON, verify that all 4 options are distinct and only one answers the question correctly.
+- If you cannot create 3 distinct, plausible distractors, reconsider the question and its answer.
+
+WHY:
+- Explain briefly why the correct answer answers the question.
+- Use your own words rather than copying the evidence verbatim.
+- Do not introduce facts that are unsupported by the passage.
+
+EVIDENCE:
+- Evidence MUST be copied exactly from the original PASSAGE.
+- Evidence must be a continuous substring of the original passage.
+- Select the complete sentence or shortest relevant excerpt that
+  directly supports the correct answer.
+- Prefer a complete supporting sentence when it provides useful context.
+- Do not use the correct answer option as the evidence.
+- Do not copy the answer option and merely add punctuation.
+- Do not paraphrase, summarize, or invent evidence.
+- Evidence and answer serve different purposes:
+  - answer: a concise response selected from the four options.
+  - evidence: the original passage text supporting that response.
+- Before returning JSON, verify that every evidence value appears
+  exactly in the original passage and supports its corresponding answer.
+- If no supporting quote can be found, do not invent one.
+
+OUTPUT:
+- Return valid JSON only.
+- Do not include Markdown fences or text outside the JSON.
+- Keep the original question text and kind unchanged.
+
+Required format:
+{{
+  "questions": [
+    {{
+      "kind": "Literal",
+      "q": "Question text unchanged",
+      "correct_option": "Concise correct answer",
+      "distractors": [
+        "Incorrect option A",
+        "Incorrect option B",
+        "Incorrect option C"
+      ],
+      "why": "Brief explanation in your own words",
+      "evidence": "Exact quote from the passage"
+    }}
+  ]
+}}
+
+Passage:
+{passage}
+
+Questions and correct answers:
+{json.dumps(questions_for_llama, ensure_ascii=False)}
+"""
+
+    raw_options = ask_llama(
+    "You are a careful quiz writer. Follow every quiz rule exactly. "
+    "Return only valid JSON with concise options, a correct answer index, "
+    "a matching explanation, and evidence copied from the passage.",
+        options_prompt,
+        temperature=0.2,
+        max_tokens=1200
+    )
+
+    try:
+        options_data = parse_json_response(raw_options)
+        option_items = options_data.get("questions", [])
+
+    
+    except json.JSONDecodeError as e:
+        print("\n[Quiz] Llama returned invalid JSON.")
+        print(f"[Quiz] JSON error: {e}")
+        print("[Quiz] Attempting to repair JSON...")
+
+        import re
+
+        repaired = re.sub(r",\s*([}\]])", r"\1", raw_options.strip())
+
+        # Close missing JSON structures when the output is truncated.
+        try:
+            options_data = parse_json_response(repaired)
+        except json.JSONDecodeError:
+            # Remove an incomplete trailing comma, if present.
+            repaired = repaired.rstrip()
+
+            # Add missing closing brackets/braces based on open structures.
+            stack = []
+            in_string = False
+            escaped = False
+
+            for char in repaired:
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        in_string = False
+                else:
+                    if char == '"':
+                        in_string = True
+                    elif char in "[{":
+                        stack.append("]" if char == "[" else "}")
+                    elif char in "]}":
+                        if stack and stack[-1] == char:
+                            stack.pop()
+
+            if in_string:
+                repaired += '"'
+
+            repaired += "".join(reversed(stack))
+
+            options_data = parse_json_response(repaired)
+
+        option_items = options_data.get("questions", [])
+        print("[Quiz] JSON repair succeeded.")
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not parse multiple-choice options from Llama: {e}"
+        )
+
+
+    # STEP 4: Combine T5 questions with Llama's supporting quiz fields.
     cleaned = []
-    for q in quiz.questions:
-        if len(q.options) != 4 or len(set(q.options)) != 4 or not 0 <= q.answer < 4:
-            continue  # skip badly formed questions
-        correct = q.options[q.answer]
-        options = q.options[:]
-        random.shuffle(options)  # models like to put the right answer in the same spot
+
+    for item, support in zip(generated, option_items):
+        correct_text = item["correct_text"]
+        correct_option = str(support.get("correct_option", "")).strip()
+        distractors = support.get("distractors", [])
+
+        if (
+            not correct_option
+            or not isinstance(distractors, list)
+            or len(distractors) != 3
+        ):
+            print(f"[Quiz] Rejected malformed options for: {item['q']}")
+            continue
+
+        distractors = [str(option).strip() for option in distractors]
+
+        if any(not option for option in distractors):
+            print(f"[Quiz] Rejected empty option for: {item['q']}")
+            continue
+
+        all_options = [correct_option] + distractors
+        normalized_options = [
+            " ".join(option.casefold().split())
+            for option in all_options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate options for: {item['q']}")
+            continue
+
+        import random
+        random.shuffle(all_options)
+
+        options = all_options
+        answer_index = options.index(correct_option)
+
+        # Reject malformed option lists.
+        if (
+            not isinstance(options, list)
+            or len(options) != 4
+            or not all(isinstance(option, str) for option in options)
+            or not isinstance(answer_index, int)
+            or isinstance(answer_index, bool)
+            or not 0 <= answer_index < 4
+        ):
+            print(f"[Quiz] Rejected malformed options for: {item['q']}")
+            print(f"[Quiz] Options received: {options}")
+            continue
+
+        options = [option.strip() for option in options]
+
+        if any(not option for option in options):
+            print(f"[Quiz] Rejected empty option for: {item['q']}")
+            continue
+
+        # Reject exact duplicate options, ignoring capitalization.
+        normalized_options = [
+            " ".join(option.casefold().split())
+            for option in options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate options for: {item['q']}")
+            print(f"[Quiz] Options received: {options}")
+            continue
+
+        # Normalize text for comparisons.
+        def normalize_text(text):
+            return " ".join(text.casefold().split())
+
+        # Trust Llama's selected answer index instead of replacing
+        # its concise answer with the original passage answer.
+        final_answer_index = answer_index
+        correct_option = options[final_answer_index]
+
+        # Reject answers that are too long to be concise.
+        word_count = len(correct_option.split())
+
+        if word_count > 12:
+            print(
+            f"[Quiz] Warning: Long correct option "
+            f"({word_count} words): {item['q']}"
+        )
+        print(f"[Quiz] Correct option: {correct_option}")
+
+        # Reject a correct option that simply repeats the evidence.
+        evidence = str(support.get("evidence", "")).strip()
+        why = str(support.get("why", "")).strip()
+
+        if not evidence:
+            print(f"[Quiz] Rejected missing evidence: {item['q']}")
+            continue
+
+        if evidence not in passage:
+            print(
+                f"[Quiz] Rejected evidence not found in passage: "
+                f"{item['q']}"
+            )
+            print(f"[Quiz] Evidence: {evidence}")
+            continue
+
+        if not why or normalize_text(why) == normalize_text(evidence):
+            print(
+                f"[Quiz] Rejected missing or repeated explanation: "
+                f"{item['q']}"
+            )
+            continue
+
+        # Final validation applies to EVERY question.
+        if len(options) != 4 or any(not option for option in options):
+            print(f"[Quiz] Rejected invalid final options: {item['q']}")
+            continue
+
+        normalized_options = [
+            normalize_text(option) for option in options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate final options: {item['q']}")
+            continue
+
         cleaned.append({
-            "kind": q.kind if q.kind in ("Literal", "Inference") else "Question",
-            "q": q.q,
+            "kind": item["kind"],
+            "q": item["q"],
             "options": options,
-            "answer": options.index(correct),
-            "why": q.why,
-            "evidence": q.evidence,
+            "answer": final_answer_index,
+            "why": why,
+            "evidence": evidence
         })
+
+    print(f"[Quiz] Questions returned by Llama: {len(option_items)}")
+    print(f"[Quiz] Questions surviving validation: {len(cleaned)}")
+
     if not cleaned:
-        raise RuntimeError("Gemini did not return any usable questions.")
+        print("[Quiz] DEBUG: No questions survived final validation.")
+        print("[Quiz] Generated T5 questions:", generated)
+        print("[Quiz] Llama option data:", option_items)
+
+        raise RuntimeError(
+            "No valid quiz questions survived validation. "
+            "Check the backend terminal for DEBUG output."
+        )
+
     return cleaned
 
 
@@ -301,35 +887,34 @@ def health():
     """Open http://localhost:8000 in a browser to check the server is running."""
     return {
         "status": "ok",
-        "gemini_connected": client is not None,
-        "model": GEMINI_MODEL if client else None,
         "endpoints": ["/partner", "/quiz", "/checkin"],
     }
-
 
 def _fail(what: str, e: Exception):
     # The widget falls back to its offline demo if any of these fail.
     print(f"Error while {what}:", repr(e))
     raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Check the server window for details.")
 
-
 @app.post("/partner")
 def partner(ask: Ask):
     try:
-        if ask.message:
-            ask.mode = classify_intent(ask.message, target_passage=ask.passage)
-        else:
+        if not ask.message:
             ask.mode = "debug"
-            
+        elif language_request(ask.message) and len(ask.message.split()) <= 5:
+            ask.mode = "repeat"   # "in english please" is not an answer
+        else:
+            ask.mode = classify_intent(ask.message, target_passage=ask.passage,
+                                       last_coach=last_coach_line(ask))
+ 
         reply_text = generate_hint(ask)
-        
-        print("\n" + "-"*40)
-        print(f"📥 [API REQUEST] /partner | Mode: {ask.mode} | Problem: {ask.problem}")
-        print(f"   Passage/Message: {ask.passage or ask.message}")
+ 
+        print("\n" + "-" * 40)
+        stuck_info = f" (level {stuck_level(ask)})" if ask.mode == "stuck" else ""
+        print(f"📥 [API REQUEST] /partner | Mode: {ask.mode}{stuck_info} | Problem: {ask.problem}")
+        print(f"   Target: {ask.passage} | Student said: {ask.message!r} | History turns: {len(ask.history)}")
         print(f"📤 [API RESPONSE]: {reply_text}")
         print("-" * 40)
-        
-        return {"reply": reply_text}
+        return {"reply": reply_text, "mode": ask.mode}
     except Exception as e:
         print("❌ Error in /partner:", repr(e))
         raise HTTPException(status_code=502, detail=str(e))
