@@ -6,7 +6,7 @@
 <title>Reading Partner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -35,6 +35,10 @@
         <button class="side-link" type="button" data-view="classes">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8.3" r="3"/><path d="M3.6 19c.6-3 2.7-4.7 5.4-4.7s4.8 1.7 5.4 4.7"/><circle cx="17" cy="8.8" r="2.3"/><path d="M15.3 14.6c2.2.2 3.9 1.8 4.4 4.4"/></svg>
           <span>Classes</span>
+        </button>
+        <button class="side-link" type="button" data-view="history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.6"/><path d="M12 7.6V12l3 2"/></svg>
+          <span>History</span>
         </button>
         <button class="side-link" type="button" data-view="settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.3 19.8 7.8V16.2L12 20.7 4.2 16.2V7.8Z"/><path d="M9.3 10.3h5.4v3.4H9.3Z"/></svg>
@@ -110,6 +114,11 @@
         <div id="classesPane" class="view-pad"></div>
       </section>
 
+      <!-- HISTORY: past reading sessions and how they went -->
+      <section id="historyView" class="view" hidden>
+        <div id="historyPane" class="view-pad"></div>
+      </section>
+
       <!-- SETTINGS: account details, password, appearance -->
       <section id="settingsView" class="view" hidden>
         <div id="settingsPane" class="view-pad"></div>
@@ -137,7 +146,7 @@
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="fileExtract.js"></script>

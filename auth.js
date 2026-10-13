@@ -12,6 +12,27 @@ function escapeAuthHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* "Remember my email" -- never the password, just the email, so a
+   shared classroom computer can offer quick-pick buttons instead of
+   everyone retyping their address every time. */
+const RECENT_LOGINS_KEY = 'recentLogins';
+function getRecentLogins() {
+  try { return JSON.parse(localStorage.getItem(RECENT_LOGINS_KEY) || '[]'); } catch (e) { return []; }
+}
+function saveRecentLogin(email) {
+  try {
+    const list = getRecentLogins().filter(e => e !== email);
+    list.unshift(email);
+    localStorage.setItem(RECENT_LOGINS_KEY, JSON.stringify(list.slice(0, 5)));
+  } catch (e) { /* private browsing etc -- login still works, just nothing remembered */ }
+}
+/* A <datalist> gives the browser's own native dropdown on the email field
+   (the arrow/suggestions a person already expects from "remember me"),
+   instead of a custom row of buttons above the form. */
+function recentEmailsDatalistHtml() {
+  return `<datalist id="recentEmails">${getRecentLogins().map(email => `<option value="${escapeAuthHtml(email)}">`).join('')}</datalist>`;
+}
+
 function authHtml() {
   return `
   <div class="auth-card">
@@ -25,10 +46,16 @@ function authHtml() {
 
     <form id="loginForm" class="auth-form">
       <label class="f" for="loginEmail">Email</label>
-      <input type="email" id="loginEmail" autocomplete="email" required>
+      <input type="email" id="loginEmail" autocomplete="email" list="recentEmails" required>
+      ${recentEmailsDatalistHtml()}
       <label class="f" for="loginPass">Password</label>
       <input type="password" id="loginPass" autocomplete="current-password" required minlength="6">
+      <label class="f" style="display:flex; align-items:center; gap:8px; font-weight:400; margin-top:12px">
+        <input type="checkbox" id="rememberMe" style="width:auto">
+        Remember my email on this device
+      </label>
       <button class="btn auth-submit" type="submit" id="loginSubmit">Log in</button>
+      <p class="small" id="forgetEmailsRow" style="margin-top:10px"></p>
     </form>
 
     <form id="signupForm" class="auth-form" hidden>
@@ -71,6 +98,23 @@ async function initAuth({ allow, onReady }) {
     document.querySelectorAll('#roleChoice button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
   }));
 
+  // A small, easy-to-find way to clear remembered emails on a shared
+  // computer -- the datalist itself has no per-item remove affordance.
+  function renderForgetRow() {
+    const row = document.getElementById('forgetEmailsRow');
+    if (!row) return;
+    row.innerHTML = getRecentLogins().length
+      ? '<a href="#" id="forgetEmailsLink">Forget remembered emails on this device</a>' : '';
+    const link = document.getElementById('forgetEmailsLink');
+    if (link) link.addEventListener('click', (e) => {
+      e.preventDefault();
+      try { localStorage.removeItem(RECENT_LOGINS_KEY); } catch (ex) { /* private browsing etc */ }
+      document.getElementById('recentEmails').outerHTML = recentEmailsDatalistHtml();
+      renderForgetRow();
+    });
+  }
+  renderForgetRow();
+
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.textContent = '';
@@ -79,8 +123,10 @@ async function initAuth({ allow, onReady }) {
     try {
       const email = document.getElementById('loginEmail').value.trim();
       const password = document.getElementById('loginPass').value;
+      const remember = document.getElementById('rememberMe').checked;
       const { data, error } = await supa.auth.signInWithPassword({ email, password });
       if (error) throw error;
+      if (remember) saveRecentLogin(email);
       await afterLogin(data.user.id);
     } catch (ex) {
       err.textContent = ex.message || 'Something went wrong. Please try again.';

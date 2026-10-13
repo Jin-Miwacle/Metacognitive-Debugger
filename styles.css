@@ -20,8 +20,15 @@
     --ok: #2f7d4f;
     --warn: #b9770e;
 
-    --serif: "Newsreader", Georgia, "Times New Roman", serif;
-    --sans: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* Fraunces for headings -- a warm, characterful serif with real
+       optical-size detail at display sizes, instead of a neutral display
+       face. Atkinson Hyperlegible for everything else -- it's designed by
+       the Braille Institute specifically to stay legible at small sizes
+       and for readers who struggle with similar-looking letterforms,
+       which fits a reading-comprehension tool for Grade 7 students better
+       than a generic UI sans would. */
+    --serif: "Fraunces", Georgia, "Times New Roman", serif;
+    --sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   :root:not([data-theme="light"]) {
     color-scheme: light dark;
@@ -50,19 +57,28 @@
      same as the global rules above. Checking body[data-theme=...] directly
      looked right but never matched anything, which let the sidebar/page
      drift out of sync with the rest of the theme. ---- */
+  /* --w-* are used by every form field, card, and panel (textarea, input,
+     select, .card, .tag, .chips...), not just the student side-panel -- the
+     teacher page used these forms too but never overrode these tokens, so
+     every input/textarea here stayed the warm cream student color against
+     this page's cooler blue-gray background. --w-ink/--w-muted don't need
+     a teacher-specific value (plain dark/light text reads fine either way). */
   body[data-app="teacher"] {
     --page: #f1f4f9; --sheet: #ffffff; --line: #dde3ee;
     --accent: #35527a; --accent-ink: #ffffff; --accent-soft: #e3eaf5;
+    --w-bg: #ffffff; --w-panel: #f1f4f9; --w-line: #dde3ee;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) body[data-app="teacher"] {
       --page: #141a24; --sheet: #1b2330; --line: #2b3545;
       --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
+      --w-bg: #1b2330; --w-panel: #141a24; --w-line: #2b3545; --w-ink: #f2f5fa; --w-muted: #a6b1c4;
     }
   }
   :root[data-theme="dark"] body[data-app="teacher"] {
     --page: #141a24; --sheet: #1b2330; --line: #2b3545;
     --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
+    --w-bg: #1b2330; --w-panel: #141a24; --w-line: #2b3545; --w-ink: #f2f5fa; --w-muted: #a6b1c4;
   }
 
   * { box-sizing: border-box; }
@@ -76,6 +92,14 @@
   }
   button { font: inherit; color: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* The hidden attribute only hides an element via the browser's own
+     stylesheet, which any of our own rules that set display on the same
+     element (like .side-link below) silently override -- that's exactly
+     how #adminNavBtn stayed hidden="" in the markup but visible on screen
+     to every teacher, not just admins. One !important rule here is safer
+     than hunting down every element that might get a hidden attribute. */
+  [hidden] { display: none !important; }
 
   .ghost {
     background: transparent; border: 1px solid var(--line); border-radius: 999px;
@@ -115,7 +139,7 @@
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; font-size: 15px; font-weight: 700;
   }
-  .brand-mark-fallback { line-height: 1; }
+  .brand-mark-fallback { line-height: 1; display: none; align-items: center; justify-content: center; width: 100%; height: 100%; }
   .brand-mark img {
     position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block;
   }
@@ -258,6 +282,21 @@
   textarea { resize: vertical; min-height: 68px; }
   label.f { display: block; font-weight: 600; margin: 12px 0 6px; }
   label.f .small { font-weight: 400; }
+
+  /* File inputs render as a bare OS control by default, which looks
+     broken sitting next to the rest of the styled form -- restyle the
+     wrapper and the pick-file button to match. */
+  input[type="file"] {
+    width: 100%; font: inherit; color: var(--w-muted); background: var(--w-panel);
+    border: 1px solid var(--w-line); border-radius: 10px; padding: 7px 11px;
+  }
+  input[type="file"]::file-selector-button,
+  input[type="file"]::-webkit-file-upload-button {
+    font: inherit; font-weight: 600; color: var(--accent-ink); background: var(--accent);
+    border: 0; border-radius: 7px; padding: 7px 12px; margin-right: 12px; cursor: pointer;
+  }
+  input[type="file"]::file-selector-button:hover,
+  input[type="file"]::-webkit-file-upload-button:hover { filter: brightness(1.08); }
 
   /* Disabled / read-only fields get their own look so they don't get
      mistaken for something you can type into. */
@@ -538,3 +577,36 @@
 @media (max-width: 480px) {
   .insight-bar-label { flex-basis: 110px; }
 }
+
+/* ---- Floating check-in popup: sits in a corner so reading isn't
+   interrupted -- answer it right there, or dismiss it and it's still
+   waiting in the Check-in tab. ---- */
+#checkinPopupHost {
+  position: fixed; right: 18px; bottom: 18px; z-index: 1900;
+  width: min(340px, calc(100vw - 36px));
+}
+.checkin-popup {
+  position: relative;
+  background: var(--w-bg); color: var(--w-ink);
+  border: 1px solid var(--w-line); border-radius: 14px;
+  padding: 16px 16px 14px;
+  box-shadow: 0 14px 36px rgba(20, 24, 40, .22);
+  animation: toast-in .18s ease-out;
+}
+.checkin-popup-close {
+  position: absolute; top: 10px; right: 10px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: transparent; border: 1px solid var(--w-line);
+  color: var(--w-muted); font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.checkin-popup-close:hover { border-color: var(--accent); color: var(--accent); }
+.checkin-popup b { display: block; padding-right: 26px; font-size: 14.5px; }
+@media (max-width: 640px) {
+  #checkinPopupHost { left: 16px; right: 16px; bottom: 16px; width: auto; }
+}
+
+/* ---- Login: "forget remembered emails" link (the remembered emails
+   themselves show via the browser's native datalist dropdown) ---- */
+#forgetEmailsRow a { color: var(--muted); }
+#forgetEmailsRow a:hover { color: var(--accent); }

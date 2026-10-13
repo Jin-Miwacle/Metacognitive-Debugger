@@ -80,7 +80,17 @@ async function renderSettings(containerId, profile) {
         <button class="btn alt" id="themeDarkBtn" type="button">Dark</button>
         <button class="btn alt" id="themeAutoBtn" type="button">Match device</button>
       </div>
-    </div>`;
+    </div>
+    ${typeof setResponseLanguage === 'function' ? `
+    <div class="card">
+      <h3 style="margin:0 0 10px">Coach language</h3>
+      <p class="small" style="margin:0 0 12px">Which language the reading coach replies in during Debug.</p>
+      <div class="row">
+        <button class="btn ${state.responseLanguage === 'auto' ? '' : 'alt'}" id="langAutoBtn" type="button">Auto-detect</button>
+        <button class="btn ${state.responseLanguage === 'en' ? '' : 'alt'}" id="langEnBtn" type="button">English</button>
+        <button class="btn ${state.responseLanguage === 'fil' ? '' : 'alt'}" id="langFilBtn" type="button">Filipino</button>
+      </div>
+    </div>` : ''}`;
 
   // --- Name ---
   document.getElementById('saveNameBtn').addEventListener('click', async () => {
@@ -117,6 +127,14 @@ async function renderSettings(containerId, profile) {
   document.getElementById('themeLightBtn').addEventListener('click', () => { setAppTheme('light'); showToast('Switched to light.', 'ok'); });
   document.getElementById('themeDarkBtn').addEventListener('click', () => { setAppTheme('dark'); showToast('Switched to dark.', 'ok'); });
   document.getElementById('themeAutoBtn').addEventListener('click', () => { setAppTheme(null); showToast('Now matching your device.', 'ok'); });
+
+  // --- Coach language (student page only -- setResponseLanguage lives in app.js) ---
+  if (typeof setResponseLanguage === 'function') {
+    const pick = (lang, label) => { setResponseLanguage(lang); renderSettings(containerId, profile); showToast(label, 'ok'); };
+    document.getElementById('langAutoBtn').addEventListener('click', () => pick('auto', 'Coach will auto-detect the language.'));
+    document.getElementById('langEnBtn').addEventListener('click', () => pick('en', 'Coach will reply in English.'));
+    document.getElementById('langFilBtn').addEventListener('click', () => pick('fil', 'Coach will reply in Filipino.'));
+  }
 }
 
 function setAppTheme(mode) {

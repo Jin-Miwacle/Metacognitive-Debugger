@@ -12,7 +12,7 @@
 
 if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js';
 }
 
 function fileKind(file) {
@@ -29,7 +29,7 @@ async function extractTextFromFile(file) {
   if (!kind) throw new Error("That file type isn't supported. Use a .pdf, .docx, .pptx, or .txt file.");
   if (kind === 'txt') return (await file.text()).trim();
   if (kind === 'pdf') {
-    if (!window.pdfjsLib) throw new Error('The PDF reader did not load. Check your internet connection and try again.');
+    if (!window.pdfjsLib) throw new Error('The PDF reader script did not load. This usually means the pdf.js script tag in the page is broken or blocked, not your connection -- check the browser console (F12) for a red error on cdn.jsdelivr.net.');
     return extractPdf(file);
   }
   if (kind === 'docx') {
