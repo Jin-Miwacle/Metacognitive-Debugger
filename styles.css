@@ -280,8 +280,12 @@
     border: 1px solid var(--w-line); border-radius: 10px; padding: 9px 11px;
   }
   textarea { resize: vertical; min-height: 68px; }
-  label.f { display: block; font-weight: 600; margin: 12px 0 6px; }
+  label.f { display: block; font-weight: 500; margin: 12px 0 6px; }
   label.f .small { font-weight: 400; }
+
+  /* Browser default h3 is bold (~700), which reads very heavy in
+     Atkinson Hyperlegible -- bring it down a step everywhere. */
+  h3 { font-weight: 600; }
 
   /* File inputs render as a bare OS control by default, which looks
      broken sitting next to the rest of the styled form -- restyle the

@@ -96,7 +96,7 @@
               <p class="small" id="rFileMsg" style="min-height:16px"></p>
               <label class="f" for="rTitle">Title</label>
               <input type="text" id="rTitle" required>
-              <label class="f" for="rBody">Text (one blank line between paragraphs) &mdash; filled in automatically if you uploaded a file above</label>
+              <label class="f" for="rBody">Text (one blank line between paragraphs). Filled in automatically if you uploaded a file above</label>
               <textarea id="rBody" style="min-height:160px" required></textarea>
               <div class="row" style="margin-top:12px">
                 <button class="btn" type="submit">Add reading</button>
@@ -391,7 +391,7 @@ async function openClassDetail(classId) {
         <p class="small" id="crFileMsg" style="min-height:16px"></p>
         <label class="f" for="crTitle">Title</label>
         <input type="text" id="crTitle" required>
-        <label class="f" for="crBody">Text (one blank line between paragraphs) &mdash; filled in automatically if you uploaded a file above</label>
+        <label class="f" for="crBody">Text (one blank line between paragraphs). Filled in automatically if you uploaded a file above</label>
         <textarea id="crBody" style="min-height:160px" required></textarea>
         <div class="row" style="margin-top:12px">
           <button class="btn" type="submit">Add reading</button>
@@ -672,7 +672,7 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
     <p class="hint">Every account and every class, across all teachers.</p>
 
     <h3 style="margin:22px 0 4px">Accounts (${(users || []).length})</h3>
-    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet &mdash; run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
+    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet. Run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
     <div style="display:flex; flex-direction:column; gap:10px">${userRows || '<p class="small">No accounts found.</p>'}</div>
 
     <h3 style="margin:28px 0 10px">Classes (${(classes || []).length})</h3>

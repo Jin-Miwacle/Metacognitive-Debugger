@@ -102,7 +102,7 @@ function updateSupportBanner() {
   el.hidden = false;
   el.textContent = s.level === 'extra'
     ? 'Extra support: check-ins are more frequent while we work through this together.'
-    : 'Checking in a little more often — a few spots have been tricky.';
+    : 'Checking in a little more often: a few spots have been tricky.';
 }
 /* Quick word-overlap check against the goal (stopwords stripped) -- no
    AI call, so it still works offline. */
@@ -408,7 +408,7 @@ function renderDebug() {
     <div class="card">
       <p class="small" style="margin:0 0 4px">You selected</p>
       <blockquote class="quote" style="margin:0 0 10px; padding-left:10px; border-left:3px solid var(--accent); font-family:var(--serif); font-size:15px">${esc(shorten(p.text, 160))}</blockquote>
-      ${goalWord ? `<p class="small" style="margin:0 0 8px; color:var(--accent)">This looks related to your goal (“${esc(goalWord)}”) — worth sorting out before moving on.</p>` : ''}
+      ${goalWord ? `<p class="small" style="margin:0 0 8px; color:var(--accent)">This looks related to your goal (“${esc(goalWord)}”), worth sorting out before moving on.</p>` : ''}
       <p class="small" style="margin:0 0 8px">What is going wrong?</p>
       <div class="chips">
         ${Object.entries(PROBLEMS).map(([k, v]) => `<button type="button" data-problem="${k}">${v.label}<small>${v.sub}</small></button>`).join('')}
@@ -675,7 +675,7 @@ setInterval(() => {
 }, 1000);
 
 /* ---- Progress tab ---- */
-const SUPPORT_LABEL = { steady: 'Steady — check-ins at your normal pace', closer: 'Checking in a bit closer together', extra: 'Extra support — check-ins are more frequent' };
+const SUPPORT_LABEL = { steady: 'Steady: check-ins at your normal pace', closer: 'Checking in a bit closer together', extra: 'Extra support: check-ins are more frequent' };
 function renderStats() {
   const t = state.threads;
   const resolved = t.filter(x => x.status === 'resolved').length;
@@ -688,7 +688,7 @@ function renderStats() {
   const g = state.goal;
   const goalRating = !g ? '' : g.finalConfidence == null ? `
     <div class="row" style="margin-top:10px"><button class="btn alt" id="rateGoalBtn" type="button">Rate how well you met your goal</button></div>` : `
-    <p class="small" style="margin-top:10px">Expected to understand it: <b>${g.confidence ?? '—'}/5</b> &middot; Actually did: <b>${g.finalConfidence}/5</b></p>`;
+    <p class="small" style="margin-top:10px">Expected to understand it: <b>${g.confidence ?? 'N/A'}/5</b> &middot; Actually did: <b>${g.finalConfidence}/5</b></p>`;
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
     <p class="lead">${g ? 'Goal: ' + esc(g.text) : 'No goal set yet.'}</p>
@@ -1111,7 +1111,7 @@ async function renderQuizPicker() {
 
   el.innerHTML = `
     <h1>Quizzes</h1>
-    <p class="hint">Pick a reading to test yourself on &mdash; a built-in text, something your teacher added, or your own paste.</p>
+    <p class="hint">Pick a reading to test yourself on: a built-in text, something your teacher added, or your own paste.</p>
     <h3 style="margin:22px 0 0">Built-in practice texts</h3>
     ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true, kind: 'quiz' })}
     <h3 style="margin:28px 0 0">From your classes</h3>
