@@ -12,14 +12,17 @@ import random
 from typing import List, Optional
 import re
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-MODEL_NAME = os.getenv("SEALLMS_MODEL", "seallms_v3_1_5b_chat_finetuned")
+# MODEL_NAME = os.getenv("SEALLMS_MODEL", "seallms_v3_1_5b_chat_finetuned")
+MODEL_NAME = "aisingapore/Gemma-SEA-LION-v3-9B-IT-GGUF"
+FILENAME = "Gemma-SEA-LION-v3-9B-IT-Q4_K_M.gguf"
+
 
 print(f"Loading local model {MODEL_NAME} (this may take a moment)...")
 quantization_config = BitsAndBytesConfig(
