@@ -148,7 +148,62 @@ function goalOverlapWord(passage) {
    A "session" is one student's attempt at one reading, created on first
    real use (a goal, a debug spot, a check-in) rather than the moment the
    reading opens -- so just browsing doesn't clutter the teacher's data.
-   A failed save just warns to console; the session keeps working locally. */
+
+   A failed save still lets the session keep working locally, because losing
+   the reading mid-way would be worse for the student. But it is no longer
+   silent. Every write below reports through noteSaveFailure(), which warns
+   to the console as before, tells the student once, and leaves a marker in
+   the sidebar for the rest of the session.
+
+   The reason this matters more than a normal app: ensureSession() is the
+   first step of every other write, so one failed insert here turns all of
+   them into no-ops. Without a visible marker a student can read a whole
+   text, flag passages, work through hints and answer check-ins, and nothing
+   is recorded, with nobody finding out until the dashboard is opened later
+   and the session is not there. */
+
+/* What has failed to save this session. Not reset when a later save works:
+   the rows already lost stay lost, and that is what the marker is about. */
+const saveHealth = { failures: 0, offline: false, last: '' };
+
+function renderSaveWarning() {
+  let box = $('#saveWarning');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'saveWarning';
+    box.className = 'save-warning';
+    // The sidebar is on every signed-in view; fall back to the body so the
+    // marker still appears if the layout changes.
+    ($('.sidebar-foot') || document.body).prepend(box);
+  }
+  const n = saveHealth.failures;
+  box.innerHTML = `<b>Not saving</b><span>${n} write${n === 1 ? '' : 's'} failed. `
+    + `Your work is on screen but not in the database.</span>`;
+  box.title = saveHealth.last;
+}
+
+/* Called instead of a bare console.warn wherever a write can fail. */
+function noteSaveFailure(what, error) {
+  const message = (error && error.message) || String(error || 'unknown error');
+  console.warn('Could not save ' + what + ':', message);
+  saveHealth.failures += 1;
+  saveHealth.last = what + ': ' + message;
+  if (saveHealth.failures === 1 && typeof showToast === 'function') {
+    showToast('Your work is not being saved. Tell your teacher before you carry on.', 'bug');
+  }
+  renderSaveWarning();
+}
+
+/* The offline fallback is its own kind of quiet: the app keeps answering,
+   but from the built-in demo replies rather than the model, so a session
+   collected this way is not measuring the model at all. */
+function noteOfflineFallback() {
+  if (saveHealth.offline) return;
+  saveHealth.offline = true;
+  if (typeof showToast === 'function') {
+    showToast('The backend could not be reached, so replies are coming from the built-in offline examples.', 'bug');
+  }
+}
 async function ensureSession() {
   if (state.session.id) return state.session.id;
   if (!state.user) return null;
@@ -158,14 +213,14 @@ async function ensureSession() {
     goal: state.goal ? state.goal.text : null,
     confidence: state.goal ? state.goal.confidence : null
   }).select('id').single();
-  if (error) { console.warn('Could not start a session in the database:', error.message); return null; }
+  if (error) { noteSaveFailure('the reading session', error); return null; }
   state.session.id = data.id;
   return data.id;
 }
 async function dbUpdateSession(fields) {
   const id = state.session.id; if (!id) return;
   const { error } = await supa.from('sessions').update(fields).eq('id', id);
-  if (error) console.warn('Could not update the session:', error.message);
+  if (error) noteSaveFailure('the session update', error);
 }
 async function dbInsertDebugEvent(t) {
   const sid = await ensureSession(); if (!sid) return;
@@ -173,13 +228,13 @@ async function dbInsertDebugEvent(t) {
     .insert({ session_id: sid, passage: t.text, problem: t.problem,
               problem_text: t.problemText || null, status: 'open' })
     .select('id').single();
-  if (error) { console.warn('Could not save the debug spot:', error.message); return; }
+  if (error) { noteSaveFailure('this flagged passage', error); return; }
   t.dbId = data.id;
 }
 async function dbUpdateDebugStatus(t) {
   if (!t.dbId) return;
   const { error } = await supa.from('debug_events').update({ status: t.status }).eq('id', t.dbId);
-  if (error) console.warn('Could not update the debug spot:', error.message);
+  if (error) noteSaveFailure('the change to this flagged passage', error);
 }
 /* Saves the actual back-and-forth for this debug thread -- needs
    hint_transcript_migration.sql run once. Without it the column doesn't
@@ -188,12 +243,12 @@ async function dbSaveTranscript(t) {
   if (!t.dbId) return;
   const transcript = t.msgs.filter(m => !m.typing).map(m => ({ from: m.from, text: m.text, demo: !!m.demo }));
   const { error } = await supa.from('debug_events').update({ transcript }).eq('id', t.dbId);
-  if (error) console.warn('Could not save the hint transcript:', error.message);
+  if (error) noteSaveFailure('the conversation about this passage', error);
 }
 async function dbInsertCheckin(prompt, level, answer) {
   const sid = await ensureSession(); if (!sid) return;
   const { error } = await supa.from('checkin_events').insert({ session_id: sid, prompt, level, answer });
-  if (error) console.warn('Could not save the check-in:', error.message);
+  if (error) noteSaveFailure('this check-in answer', error);
 }
 
 /* ---------- Offline demo quiz (used only if the backend is unavailable, and only for the demo story) ---------- */
@@ -270,6 +325,7 @@ async function callBackend(path, body) {
     console.warn('The backend answered with an error:', r.status, path);
   } catch (e) {
     console.warn('Could not reach the backend, using the offline demo instead.', e);
+    noteOfflineFallback();
   }
   return null;
 }
@@ -1233,7 +1289,7 @@ async function ensureQuizSession() {
   const { data, error } = await supa.from('sessions').insert({
     student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz'
   }).select('id').single();
-  if (error) { console.warn('Could not start a quiz session in the database:', error.message); return null; }
+  if (error) { noteSaveFailure('the quiz attempt', error); return null; }
   quizCtx.sessionId = data.id;
   return data.id;
 }
@@ -1242,7 +1298,7 @@ async function saveQuizAnswer(question, chosen, correct, questionId) {
   const { error } = await supa.from('quiz_results').insert({
     session_id: sid, question, chosen, correct,
     quiz_id: quizCtx.quizId, question_id: questionId || null });
-  if (error) console.warn('Could not save the quiz answer:', error.message);
+  if (error) noteSaveFailure('this quiz answer', error);
 }
 
 function renderQuizzesView() {
@@ -1384,10 +1440,44 @@ async function openAssignedQuiz(quizId) {
   renderQuizWorkspace();
 }
 
+/* How many questions a passage can carry. The same rule lives in teacher.html
+   and in main.py as a backstop, so all three agree: one question per 25 words,
+   in steps of five, never fewer than 5 or more than 20. A 150-word built-in
+   reading therefore offers 5 and nothing else.
+
+   The ceiling is not arbitrary. The model writes the whole quiz as one piece
+   of JSON, so a long one is likelier to be cut off mid-string, and the parse
+   is all or nothing: a truncated answer loses the entire quiz rather than the
+   last question. Short passages also run out of material for believable wrong
+   options, which is the failure that looks like a working quiz. */
+const WORDS_PER_QUESTION = 25;
+const QUESTION_COUNTS = [5, 10, 15, 20];
+
+function countWords(text) {
+  return (text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+function questionsSupported(words) {
+  return Math.max(5, Math.min(QUESTION_COUNTS[QUESTION_COUNTS.length - 1],
+                              Math.floor(Math.floor(words / WORDS_PER_QUESTION) / 5) * 5));
+}
+
+/* What the student picked on the "Make my quiz" screen. Kept outside quizCtx
+   so switching readings does not silently reset their choice. */
+const quizPrefs = { n: 5, kinds: 'mixed' };
+
 async function loadQuizQuestions() {
   quizCtx.status = 'loading'; quizCtx.error = ''; quizCtx.answers = {};
   renderQuizWorkspace();
-  const d = await callBackend('/quiz', { text: quizCtx.text, goal: null, n: 5 });
+  const supported = questionsSupported(countWords(quizCtx.text));
+  const d = await callBackend('/quiz', {
+    text: quizCtx.text,
+    goal: null,
+    n: Math.min(quizPrefs.n, supported),
+    kinds: quizPrefs.kinds,
+    // Follows the coach-language setting they already chose in Settings rather
+    // than asking the same question again here. 'auto' means follow the text.
+    language: state.responseLanguage === 'auto' ? null : state.responseLanguage
+  });
   if (d && Array.isArray(d.questions) && d.questions.length) {
     quizCtx.questions = d.questions; quizCtx.source = 'ai'; quizCtx.status = 'ready';
   } else if (quizCtx.demoId === 'demo-lamp') {
@@ -1412,12 +1502,32 @@ function renderQuizWorkspace() {
     return;
   }
   if (quizCtx.status !== 'ready') {
+    const words = countWords(quizCtx.text);
+    const supported = questionsSupported(words);
+    if (quizPrefs.n > supported) quizPrefs.n = supported;
     el.innerHTML = `
       ${back}<h1>${esc(quizCtx.title)}</h1>
       <p class="hint">Make a short quiz based on this exact text.</p>
       ${quizCtx.status === 'error' ? `<div class="card"><b>Couldn't make the quiz</b><p style="margin:6px 0 0">${esc(quizCtx.error)}</p></div>` : ''}
-      <div class="row"><button class="btn" id="makeQuiz" type="button">${quizCtx.status === 'error' ? 'Try again' : 'Make my quiz'}</button></div>`;
+
+      <label class="f" for="myQuizN">How many questions</label>
+      <select id="myQuizN">${QUESTION_COUNTS.map(n => `<option value="${n}"${
+        n === quizPrefs.n ? ' selected' : ''}${n > supported ? ' disabled' : ''}>${n} questions${
+        n > supported ? ' (text is too short)' : ''}</option>`).join('')}</select>
+
+      <label class="f" for="myQuizKinds">What kind of questions</label>
+      <select id="myQuizKinds">
+        <option value="mixed"${quizPrefs.kinds === 'mixed' ? ' selected' : ''}>A mix of both</option>
+        <option value="literal"${quizPrefs.kinds === 'literal' ? ' selected' : ''}>Answers stated in the text</option>
+        <option value="inferential"${quizPrefs.kinds === 'inferential' ? ' selected' : ''}>Answers you have to work out</option>
+      </select>
+      <p class="small" style="margin:6px 0 0">This text is ${words} words, so it can carry up to ${supported} question${supported === 1 ? '' : 's'}. Questions come out in the language of the reading; the answer choices follow your language setting.</p>
+
+      <div class="row" style="margin-top:14px"><button class="btn" id="makeQuiz" type="button">${quizCtx.status === 'error' ? 'Try again' : 'Make my quiz'}</button></div>`;
     wireQuizBack(el);
+    const nSel = $('#myQuizN', el), kSel = $('#myQuizKinds', el);
+    nSel.addEventListener('change', () => { quizPrefs.n = +nSel.value || 5; });
+    kSel.addEventListener('change', () => { quizPrefs.kinds = kSel.value; });
     $('#makeQuiz', el).addEventListener('click', loadQuizQuestions);
     return;
   }

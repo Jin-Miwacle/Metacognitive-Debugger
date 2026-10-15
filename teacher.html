@@ -606,12 +606,36 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
         if (e.status === 'stuck') stuck++; else if (e.status === 'resolved') resolved++; else open++;
       });
     }
+    // Quiz performance on this reading and nothing else. It goes through a
+    // function because a teacher cannot read other students' quiz_results
+    // directly, and the function scopes it twice: to this reading, and to
+    // quizzes this teacher made. That second part matters for the built-in
+    // readings, where several teachers can make a quiz from the same text and
+    // none of them should see another's class in this number.
+    //
+    // The class tiles stay as they are, counting every quiz in the class
+    // together. That is the general picture; this is the per-reading one.
+    //
+    // Needs reading_quiz_stats_migration.sql. Without it the card just leaves
+    // the figure out rather than showing a zero that would read as "nobody
+    // scored anything".
+    let quizMeta = '';
+    const { data: quizStats } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
+    const qs = Array.isArray(quizStats) ? quizStats[0] : quizStats;
+    if (qs && Number(qs.quizzes_made) > 0) {
+      const made = Number(qs.quizzes_made), answered = Number(qs.answered || 0);
+      quizMeta = ` &middot; ${made} quiz${made === 1 ? '' : 'zes'} from this text`
+        + (answered
+            ? ` &middot; ${scorePercent(qs.correct, answered)} average from ${qs.students_answered} student${Number(qs.students_answered) === 1 ? '' : 's'}`
+            : ' &middot; not answered yet');
+    }
+
     const when = new Date(r.created_at).toLocaleDateString();
     return `<div class="reading-card" data-reading="${r.id}">
       <div class="row-top">
         <div>
           <h3>${escapeHtml(r.title)}</h3>
-          <p class="meta">Added ${when} &middot; ${sessionCount} student session${sessionCount === 1 ? '' : 's'}${sessionCount ? ` &middot; ${resolved} cleared up &middot; ${stuck} still stuck` : ''}</p>
+          <p class="meta">Added ${when} &middot; ${sessionCount} student session${sessionCount === 1 ? '' : 's'}${sessionCount ? ` &middot; ${resolved} cleared up &middot; ${stuck} still stuck` : ''}${quizMeta}</p>
         </div>
         <div class="row" style="gap:10px">
           ${classId ? '<button class="tiny" type="button" data-act="quiz">Make a quiz</button>' : ''}
@@ -684,8 +708,31 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
   return d.questions;
 }
 
+/* How many questions a passage can carry. The same rule lives in app.js for
+   the student's own quizzes and in main.py as a backstop, so all three agree:
+   one question per 25 words, in steps of five, never fewer than 5 or more
+   than 20. A 150-word built-in reading therefore offers 5 and nothing else.
+
+   The ceiling is not arbitrary. The model writes the whole quiz as one piece
+   of JSON, so a long one is likelier to be cut off mid-string, and the parse
+   is all or nothing: a truncated answer loses the entire quiz rather than the
+   last question. Short passages also run out of material for believable wrong
+   options, which is the failure that looks like a working quiz. */
+const WORDS_PER_QUESTION = 25;
+const QUESTION_COUNTS = [5, 10, 15, 20];
+
+function countWords(text) {
+  return (text || '').trim().split(/\s+/).filter(Boolean).length;
+}
+function questionsSupported(words) {
+  return Math.max(5, Math.min(QUESTION_COUNTS[QUESTION_COUNTS.length - 1],
+                              Math.floor(Math.floor(words / WORDS_PER_QUESTION) / 5) * 5));
+}
+
 async function openQuizSettings(reading) {
   const dlg = document.getElementById('quizDlg');
+  const words = countWords(reading.body);
+  const supported = questionsSupported(words);
 
   // A reading opened from inside a class already has its class. One opened
   // from the Dashboard, or a built-in reading, belongs to no class, so the
@@ -719,7 +766,10 @@ async function openQuizSettings(reading) {
       <input type="text" id="qzNote" placeholder="e.g. Answer after reading the whole text">
 
       <label class="f" for="qzN">How many questions</label>
-      <select id="qzN">${[3, 4, 5, 6, 8, 10].map(n => `<option value="${n}"${n === 5 ? ' selected' : ''}>${n} questions</option>`).join('')}</select>
+      <select id="qzN">${QUESTION_COUNTS.map(n => `<option value="${n}"${
+        n === 5 ? ' selected' : ''}${n > supported ? ' disabled' : ''}>${n} questions${
+        n > supported ? ' (text is too short)' : ''}</option>`).join('')}</select>
+      <p class="small" style="margin:6px 0 0">${escapeHtml(reading.title)} is ${words} words, which supports up to ${supported} question${supported === 1 ? '' : 's'}. Past about one question per ${WORDS_PER_QUESTION} words the model runs out of material and starts repeating itself.</p>
 
       <label class="f" for="qzKinds">Question types</label>
       <select id="qzKinds">
@@ -762,7 +812,9 @@ async function openQuizSettings(reading) {
     const settings = {
       title: document.getElementById('qzTitle').value.trim() || reading.title,
       instructions: document.getElementById('qzNote').value.trim(),
-      n: +document.getElementById('qzN').value,
+      // A disabled option cannot be picked, so this is only a backstop against
+      // a stale page. The backend clamps too.
+      n: Math.min(+document.getElementById('qzN').value || 5, supported),
       kinds: document.getElementById('qzKinds').value,
       language: document.getElementById('qzLang').value
     };
@@ -798,6 +850,19 @@ function classQuizAverage(rows) {
 /* opts.canManage adds the Delete button, opts.canQuiz adds "Make a quiz".
    They are separate because an admin manages the texts but has no class to
    assign a quiz to, and a quiz always belongs to one class. */
+/* The "N quizzes from this text, X% average" tail on a reading card. Empty
+   when this account has made no quiz from that reading, so a teacher does not
+   see a 0% that is really "nobody has used it yet", and empty when the
+   migration behind it has not been run. */
+function builtInQuizMeta(qs) {
+  if (!qs || !Number(qs.quizzes_made)) return '';
+  const made = Number(qs.quizzes_made), answered = Number(qs.answered || 0);
+  return ` &middot; ${made} quiz${made === 1 ? '' : 'zes'} you made from this`
+    + (answered
+        ? ` &middot; ${scorePercent(qs.correct, answered)} average from ${qs.students_answered} student${Number(qs.students_answered) === 1 ? '' : 's'}`
+        : ' &middot; not answered yet');
+}
+
 async function loadBuiltInReadings(list, opts = {}) {
   const canManage = !!opts.canManage, canQuiz = !!opts.canQuiz;
   list.innerHTML = '<p class="small">Loading...</p>';
@@ -816,12 +881,21 @@ async function loadBuiltInReadings(list, opts = {}) {
     return;
   }
 
-  list.innerHTML = readings.map(r => `
+  // Same per-reading quiz figure as the teacher's own readings, scoped in SQL
+  // to this reading and to the quizzes this account made. Several teachers can
+  // quiz the same built-in text, so without that second scope one teacher
+  // would be reading another's class results here.
+  const stats = await Promise.all(readings.map(async (r) => {
+    const { data } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
+    return Array.isArray(data) ? data[0] : data;
+  }));
+
+  list.innerHTML = readings.map((r, i) => `
     <div class="reading-card" data-reading="${r.id}">
       <div class="row-top">
         <div>
           <h3>${escapeHtml(r.title)}</h3>
-          <p class="meta">Built-in &middot; available to every student</p>
+          <p class="meta">Built-in &middot; available to every student${builtInQuizMeta(stats[i])}</p>
         </div>
         <div class="row" style="gap:10px">
           ${canQuiz ? '<button class="tiny" type="button" data-act="quiz">Make a quiz</button>' : ''}
