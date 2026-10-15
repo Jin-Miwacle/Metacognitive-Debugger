@@ -20,7 +20,7 @@
       plain http, the browser blocks every call before it is sent. The
       backend needs its own https address, not an IP with a port. */
 const CONFIG = Object.assign(
-  { API_BASE: null, CHECKIN_EVERY_SEC: 90 },
+  { API_BASE: "http://localhost:8000", CHECKIN_EVERY_SEC: 90 },
   window.APP_CONFIG || {}
 );
 
