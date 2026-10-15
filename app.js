@@ -375,6 +375,10 @@ function wireGoalForm(scope, g, onDone) {
     $('#goalLine').textContent = 'Goal: ' + text;
     if (state.session.id) dbUpdateSession({ goal: text, confidence: conf });
     else ensureSession();
+    // Low confidence starts check-ins closer together; high confidence starts
+    // relaxed. This has to run before startCheckins(), or the first countdown
+    // is set from the old level and never reflects what they just told us.
+    nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
     if (!state.checkin.on) startCheckins();
     if (onDone) onDone();
     return true;
@@ -808,6 +812,7 @@ function renderStats() {
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
     <p class="lead">${state.goal ? 'Goal: ' + esc(state.goal.text) : 'No goal set yet.'}</p>
+    <p class="small">Support level: <b>${SUPPORT_LABEL[state.support.level]}</b></p>
     <div class="stats">
       <div class="stat"><b>${t.length}</b><span>Spots debugged</span></div>
       <div class="stat"><b>${resolved}</b><span>Cleared up</span></div>
@@ -909,7 +914,7 @@ $('#pasteOk').addEventListener('click', () => {
   if (pasteTarget === 'reader') {
     enterReader({ title: 'Your text', byline: 'Pasted passage', bodyHtml: paragraphsToHtml(raw), readingId: null });
   } else {
-    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: true, title: 'Your text', text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
+    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: true, title: 'Your text', text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
     renderQuizWorkspace();
   }
 });
@@ -1186,26 +1191,32 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
    Picking a reading here fetches its text directly from the database,
    so a quiz can be taken without ever opening that reading in Readings.
    ===================================================================== */
-let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
+let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
 
 async function ensureQuizSession() {
   if (quizCtx.sessionId) return quizCtx.sessionId;
   if (!state.user) return null;
+  // kind: 'quiz' keeps this out of the reading-session counts. A quiz
+  // attempt has no goal, no flagged passages and no check-ins, so counting
+  // it as a reading session inflates every per-session figure the teacher
+  // dashboard and the evaluation rely on. Needs session_kind_migration.sql.
   const { data, error } = await supa.from('sessions').insert({
-    student_id: state.user.id, reading_id: quizCtx.readingId
+    student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz'
   }).select('id').single();
   if (error) { console.warn('Could not start a quiz session in the database:', error.message); return null; }
   quizCtx.sessionId = data.id;
   return data.id;
 }
-async function saveQuizAnswer(question, chosen, correct) {
+async function saveQuizAnswer(question, chosen, correct, questionId) {
   const sid = await ensureQuizSession(); if (!sid) return;
-  const { error } = await supa.from('quiz_results').insert({ session_id: sid, question, chosen, correct });
+  const { error } = await supa.from('quiz_results').insert({
+    session_id: sid, question, chosen, correct,
+    quiz_id: quizCtx.quizId, question_id: questionId || null });
   if (error) console.warn('Could not save the quiz answer:', error.message);
 }
 
 function renderQuizzesView() {
-  if (quizCtx.readingId || quizCtx.isDemo || quizCtx.isPasted) renderQuizWorkspace();
+  if (quizCtx.quizId || quizCtx.readingId || quizCtx.isDemo || quizCtx.isPasted) renderQuizWorkspace();
   else renderQuizPicker();
 }
 
@@ -1217,6 +1228,8 @@ async function renderQuizPicker() {
 
   const { data: readings, error } = await getVisibleReadings();
 
+  const assigned = await getAssignedQuizzes();
+
   const teacherGrid = (!error && readings && readings.length)
     ? readingCardsHtml(readings, QUIZ_ICON)
     : `<p class="small">${error ? 'Could not load readings right now.'
@@ -1225,6 +1238,16 @@ async function renderQuizPicker() {
   el.innerHTML = `
     <h1>Quizzes</h1>
     <p class="hint">Pick a reading to test yourself on: a built-in text, something your teacher added, or your own paste.</p>
+    ${assigned.length ? `<h3 style="margin:22px 0 0">Assigned by your teacher</h3>
+    <div class="quiz-list">${assigned.map(z => `
+      <button class="quiz-row" data-assigned="${z.id}">
+        <span class="quiz-row-icon">${QUIZ_ICON}</span>
+        <span class="quiz-row-body">
+          <span class="quiz-row-title">${esc(z.title)}<span class="quiz-row-badge">Assigned</span></span>
+          <span class="quiz-row-meta">${z.n} question${z.n === 1 ? '' : 's'}${z.instructions ? ' &middot; ' + esc(z.instructions) : ''}</span>
+        </span>
+        <span class="quiz-row-cta">Start quiz &rarr;</span>
+      </button>`).join('')}</div>` : ''}
     <h3 style="margin:22px 0 0">Built-in practice texts</h3>
     ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true, kind: 'quiz' })}
     <h3 style="margin:28px 0 0">From your classes</h3>
@@ -1237,18 +1260,98 @@ async function renderQuizPicker() {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
-    quizCtx = { readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
+    quizCtx = { readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
     renderQuizWorkspace();
   }));
   $$('.lib-card[data-demo]', el).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
-    quizCtx = { readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
+    quizCtx = { readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
     renderQuizWorkspace();
+  }));
+  $$('button[data-assigned]', el).forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    await openAssignedQuiz(b.dataset.assigned);
   }));
   $('#quizPaste', el).addEventListener('click', () => openPasteDialog('quiz'));
   const classesLink = $('#goToClassesQuiz', el);
   if (classesLink) classesLink.addEventListener('click', (e) => { e.preventDefault(); showView('classes'); });
+}
+
+/* Quizzes a teacher has assigned to a class this student has joined. Row
+   level security already limits the table to assigned quizzes in joined
+   classes, so there is nothing to filter here. Needs
+   teacher_quizzes_migration.sql; until that runs the table does not exist,
+   this returns nothing, and the section simply does not appear. */
+async function getAssignedQuizzes() {
+  if (!state.user) return [];
+  const { data, error } = await supa
+    .from('quizzes')
+    .select('id, title, instructions, created_at, quiz_questions(id)')
+    .order('created_at', { ascending: false });
+  if (error) { console.warn('Could not load assigned quizzes:', error.message); return []; }
+  return (data || [])
+    .map(z => ({ id: z.id, title: z.title, instructions: z.instructions,
+                 n: (z.quiz_questions || []).length }))
+    .filter(z => z.n > 0);
+}
+
+/* Answers this student already gave on the assigned quiz now open. Only the
+   earliest answer to each question is kept, the same rule the teacher's
+   figures use, so what the student sees and what the teacher sees agree.
+   Needs quiz_stats_migration.sql for created_at and question_id; without it
+   this returns nothing and the quiz just opens blank. */
+async function loadPreviousAnswers() {
+  if (!quizCtx.quizId || !state.user) return;
+  const { data, error } = await supa
+    .from('quiz_results')
+    .select('question_id, chosen, created_at, sessions!inner(student_id)')
+    .eq('quiz_id', quizCtx.quizId)
+    .eq('sessions.student_id', state.user.id)
+    .order('created_at', { ascending: true });
+  if (error) { console.warn('Could not load earlier answers:', error.message); return; }
+
+  const firstFor = {};
+  (data || []).forEach(row => {
+    if (row.question_id && !(row.question_id in firstFor)) firstFor[row.question_id] = row.chosen;
+  });
+  quizCtx.questions.forEach((q, i) => {
+    if (!(q.id in firstFor)) return;
+    const j = q.options.findIndex(o => o === firstFor[q.id]);
+    if (j > -1) quizCtx.answers[i] = j;
+  });
+}
+
+/* An assigned quiz is answered exactly as the teacher assigned it, so its
+   questions are loaded rather than generated. Every student in the class
+   answers the same set, which is what makes their scores comparable. */
+async function openAssignedQuiz(quizId) {
+  const el = $('#quizzesPane');
+  el.innerHTML = `<h1>Quizzes</h1><p class="hint">Opening the quiz…</p>`;
+  const [{ data: quiz, error: zErr }, { data: rows, error: qErr }] = await Promise.all([
+    supa.from('quizzes').select('id, title, instructions, reading_id').eq('id', quizId).single(),
+    supa.from('quiz_questions').select('id, position, kind, q, options, answer, why, evidence')
+        .eq('quiz_id', quizId).order('position')
+  ]);
+  if (zErr || qErr || !quiz || !rows || !rows.length) {
+    const e = zErr || qErr;
+    el.innerHTML = `<h1>Quizzes</h1><p class="small" style="color:var(--bug)">Could not open that quiz${
+      e ? ': ' + esc(e.message) : '.'}</p>`;
+    return;
+  }
+  quizCtx = {
+    readingId: quiz.reading_id, isDemo: false, demoId: null, isPasted: false,
+    title: quiz.title, text: '', sessionId: null,
+    questions: rows.map(r => ({ id: r.id, kind: r.kind, q: r.q, options: r.options,
+                                answer: r.answer, why: r.why, evidence: r.evidence })),
+    answers: {}, status: 'ready', error: '', source: 'teacher',
+    quizId: quiz.id, instructions: quiz.instructions
+  };
+  // Show what they answered before rather than a blank quiz. Only the first
+  // answer to each question counts, here and in the teacher's figures, so
+  // re-answering would only mislead them about their own score.
+  await loadPreviousAnswers();
+  renderQuizWorkspace();
 }
 
 async function loadQuizQuestions() {
@@ -1294,7 +1397,8 @@ function renderQuizWorkspace() {
   const score = Object.entries(quizCtx.answers).filter(([i, a]) => a === qs[i].answer).length;
   el.innerHTML = `
     ${back}<h1>${esc(quizCtx.title)}</h1>
-    <p class="hint">${done ? `${score} of ${done} correct so far.` : 'Pick the best answer for each question.'}${quizCtx.source === 'demo' ? ' (Offline demo quiz)' : ''}</p>
+    <p class="hint">${done ? `${score} of ${done} correct so far.` : 'Pick the best answer for each question.'}${quizCtx.source === 'demo' ? ' (Offline demo quiz)' : ''}${quizCtx.quizId ? ' Assigned by your teacher.' : ''}</p>
+    ${quizCtx.instructions ? `<p class="small" style="margin:0 0 10px">${esc(quizCtx.instructions)}</p>` : ''}
     ${qs.map((q, i) => {
       const a = quizCtx.answers[i]; const answered = a !== undefined;
       return `<div class="card">
@@ -1304,20 +1408,21 @@ function renderQuizWorkspace() {
         ${answered ? `<div class="explain">${esc(q.why || '')}${q.evidence ? ` Look at: “${esc(q.evidence)}”` : ''}</div>` : ''}
       </div>`;
     }).join('')}
-    <div class="row"><button class="btn alt" id="newQuiz" type="button">Make new questions</button></div>`;
+    ${quizCtx.quizId ? '' : '<div class="row"><button class="btn alt" id="newQuiz" type="button">Make new questions</button></div>'}`;
   wireQuizBack(el);
   $$('.opt', el).forEach(b => b.addEventListener('click', () => {
     const i = +b.dataset.q, j = +b.dataset.o;
     quizCtx.answers[i] = j;
     const correct = j === qs[i].answer;
-    saveQuizAnswer(qs[i].q, qs[i].options[j], correct);
+    saveQuizAnswer(qs[i].q, qs[i].options[j], correct, qs[i].id || null);
     renderQuizWorkspace();
   }));
-  $('#newQuiz', el).addEventListener('click', loadQuizQuestions);
+  const again = $('#newQuiz', el);
+  if (again) again.addEventListener('click', loadQuizQuestions);
 }
 function wireQuizBack(el) {
   $('#quizBack', el).addEventListener('click', () => {
-    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
+    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
     renderQuizzesView();
   });
 }

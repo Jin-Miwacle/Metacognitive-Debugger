@@ -26,6 +26,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from pathlib import Path
 from peft import PeftModel
 import contextlib
+import threading
 
 
 # Load SEALION Model
@@ -69,7 +70,11 @@ print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
 # The model was saved with transformers 5.x, which writes extra_special_tokens as a list;
 # 4.x expects a dict and crashes on load. Passing an empty dict works on both.
 qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
-qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+# mT5 has its own output layer (lm_head), separate from the input embeddings, and the
+# checkpoint stores both. Its config says tie_word_embeddings=true (written by 5.x), which
+# makes 4.x drop the trained lm_head and reuse the embeddings, so every output is garbage
+# ("01.01.201 ...") that never ends. Force them untied.
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME, tie_word_embeddings=False)
 
 # CPU by default: the mT5 is 2.3 GB in fp32, and next to the 4-bit 9B model (~6.5 GB)
 # it would not fit in 8 GB of VRAM. Set QG_DEVICE=cuda to try the GPU anyway.
@@ -81,16 +86,21 @@ print("T5 question-generation model loaded successfully!")
 
 app = FastAPI(title="Reading Partner backend")
 
-# Lets the widget (a different address) talk to this backend.
-# For the real launch, replace "*" with your real website address.
+# Lets the widget (a different address) talk to this backend. For the hosted site, set
+# ALLOWED_ORIGINS to its address(es), comma-separated, e.g.
+#   $env:ALLOWED_ORIGINS = "https://jin-miwacle.github.io"
+# Unset = allow any origin (fine for local testing).
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+print(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 _SYSTEM_SUPPORTED = None
+_GEN_LOCK = threading.Lock()
 
 def _system_supported():
     global _SYSTEM_SUPPORTED
@@ -144,7 +154,10 @@ def ask_llama(system_rules: str, prompt: str, history: Optional[List["Turn"]] = 
     do_sample = temperature > 0.0
     adapter_off = (not use_adapter) and hasattr(model, "disable_adapter")
     ctx = model.disable_adapter() if adapter_off else contextlib.nullcontext()
-    with ctx, torch.no_grad():
+    # One generation at a time. FastAPI runs these endpoints in a thread pool, so two
+    # students at once would otherwise generate in parallel on one 8 GB GPU, and one
+    # request's disable_adapter() would switch the adapter off under the other.
+    with _GEN_LOCK, ctx, torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_tokens,
@@ -427,6 +440,25 @@ You MUST output valid JSON matching this schema exactly:
 Keep options balanced and write clear questions based ONLY on the text."""
 
 
+# Curly quotes -> straight, one character for one, so positions in the passage are kept.
+_QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
+
+def find_evidence(evidence: str, passage: str) -> Optional[str]:
+    """Locate the model's quote in the passage and return the passage's own text for it.
+
+    The same words must appear in the same order, but line breaks, spacing, punctuation
+    between words, curly vs straight quotes and case may differ: models routinely join
+    the lines of a poem with ", " or turn ’ into '. Returns None if the words are not there.
+    """
+    words = re.findall(r"[\w']+", evidence.translate(_QUOTES))
+    if not words:
+        return None
+    pattern = r"(?<![\w'])" + r"[^\w']+".join(re.escape(w) for w in words) + r"(?![\w'])"
+    m = re.search(pattern, passage.translate(_QUOTES), re.IGNORECASE)
+    if not m:
+        return None
+    return " ".join(passage[m.start():m.end()].split())
+
 def generate_quiz(ask: QuizAsk) -> list:
     n = max(2, min(ask.n, 5))
     passage = ask.text.strip()[:4000]
@@ -498,7 +530,8 @@ Passage:
         "Select answer phrases from the supplied passage. Return valid JSON only.",
         answer_prompt,
         temperature=0.2,
-        max_tokens=500
+        max_tokens=500,
+        use_adapter=False,  # the Socratic adapter is trained to avoid stating answers
     )
 
     try:
@@ -534,29 +567,23 @@ Passage:
         if exact_answer.lower() in used_answers:
             continue
 
-        highlighted = (
-            passage[:start]
-            + "<hl> "
-            + exact_answer
-            + " <hl>"
-            + passage[start + len(exact_answer):]
-        )
-
-        prompt = f"generate question: {highlighted}"
+        prompt = f"generate question: answer: {exact_answer} context: {passage}"
 
         inputs = qg_tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=512
+            max_length=768
         )
         inputs = {key: value.to(qg_device) for key, value in inputs.items()}
 
         with torch.inference_mode():
             outputs = qg_model.generate(
                 **inputs,
-                max_new_tokens=64,
-                num_beams=4
+                max_new_tokens=48,
+                num_beams=4,
+                no_repeat_ngram_size=3,
+                early_stopping=True
             )
 
         question = qg_tokenizer.decode(
@@ -724,7 +751,8 @@ Questions and correct answers:
     "a matching explanation, and evidence copied from the passage.",
         options_prompt,
         temperature=0.2,
-        max_tokens=1200
+        max_tokens=1200,
+        use_adapter=False,  # base model: this step must state the correct answer
     )
 
     try:
@@ -881,13 +909,15 @@ Questions and correct answers:
             print(f"[Quiz] Rejected missing evidence: {item['q']}")
             continue
 
-        if evidence not in passage:
+        found = find_evidence(evidence, passage)
+        if not found:
             print(
                 f"[Quiz] Rejected evidence not found in passage: "
                 f"{item['q']}"
             )
             print(f"[Quiz] Evidence: {evidence}")
             continue
+        evidence = found   # the passage's own wording, not the model's copy of it
 
         if not why or normalize_text(why) == normalize_text(evidence):
             print(

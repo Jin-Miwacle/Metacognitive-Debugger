@@ -33,6 +33,10 @@
   #classNameHeading .edit-hint { font-size: 12px; font-weight: 400; color: var(--muted); }
   .student-row { cursor: pointer; }
   .student-row:hover { border-color: var(--accent); }
+  /* The quiz list and the per-student rows inside a quiz are clickable too,
+     so they get the same affordance rather than looking like static rows. */
+  [data-quiz], .student-quiz-row { cursor: pointer; }
+  [data-quiz]:hover, .student-quiz-row:hover { border-color: var(--accent); }
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }
   .stat-tile { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .stat-tile .stat-num { font-family: var(--serif); font-size: 32px; font-weight: 600; line-height: 1.1; }
@@ -125,6 +129,8 @@
     </main>
   </div>
 </div>
+
+<dialog id="quizDlg"></dialog>
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -333,10 +339,12 @@ async function openClassDetail(classId) {
     return;
   }
 
-  const [{ data: progressRows, error: progErr }, { data: debugStats }, { data: checkinStats }] = await Promise.all([
+  const [{ data: progressRows, error: progErr }, { data: debugStats }, { data: checkinStats },
+         { count: quizCount }] = await Promise.all([
     supa.rpc('teacher_class_progress', { p_class_id: classId }),
     supa.rpc('teacher_debug_stats'),
-    supa.rpc('teacher_checkin_stats')
+    supa.rpc('teacher_checkin_stats'),
+    supa.from('quizzes').select('id', { count: 'exact', head: true }).eq('class_id', classId)
   ]);
   const needsMigration = progErr && /function|does not exist|schema cache/i.test(progErr.message);
 
@@ -356,6 +364,8 @@ async function openClassDetail(classId) {
         <div class="stat-tile"><div class="stat-num">${sum('stuck_count')}</div><div class="stat-label">Still stuck</div></div>
         <div class="stat-tile"><div class="stat-num">${sum('checkins_count')}</div><div class="stat-label">Check-ins</div></div>
         <div class="stat-tile"><div class="stat-num">${sum('checkins_lost_count')}</div><div class="stat-label">"I'm lost" check-ins</div></div>
+        <div class="stat-tile"><div class="stat-num">${quizCount || 0}</div><div class="stat-label">Quizzes assigned</div></div>
+        <div class="stat-tile"><div class="stat-num">${classQuizAverage(progressRows)}</div><div class="stat-label">Class quiz average</div></div>
       </div>
       ${classInsightsHtml(myDebug, myCheckins)}`;
   }
@@ -388,6 +398,10 @@ async function openClassDetail(classId) {
     <p class="hint">Click a student to see their own progress. Each joined student's summary across this class's readings.</p>
     ${studentsHtml}
 
+    <h3 style="margin:28px 0 4px">Quizzes for this class</h3>
+    <p class="hint">Generated from a reading, checked by you, then assigned. Click one to see how the class did.</p>
+    <div id="classQuizList"></div>
+
     <h3 style="margin:28px 0 4px">Readings for this class</h3>
     <p class="hint">Only students who've joined ${escapeHtml(cls.name)} see these.</p>
     <div id="classReadingList"></div>
@@ -409,9 +423,11 @@ async function openClassDetail(classId) {
     </div>`;
 
   document.getElementById('classDetailBack').addEventListener('click', loadClasses);
+  currentClass = cls;   // the quiz builder navigates back here
   wireClassNameRename(cls);
   wireClassReadingForm(cls.id);
   loadReadingsInto(document.getElementById('classReadingList'), currentProfile.id, cls.id, 'No readings in this class yet. Add one below.');
+  loadClassQuizzes(document.getElementById('classQuizList'), cls.id);
 
   if (progressRows && progressRows.length) {
     el.querySelectorAll('.student-row').forEach(row => {
@@ -440,6 +456,8 @@ function renderStudentDetail(cls, r) {
       <div class="stat-tile"><div class="stat-num">${r.open_count || 0}</div><div class="stat-label">In progress</div></div>
       <div class="stat-tile"><div class="stat-num">${r.checkins_count}</div><div class="stat-label">Check-in${r.checkins_count === 1 ? '' : 's'}</div></div>
       <div class="stat-tile"><div class="stat-num">${r.checkins_lost_count || 0}</div><div class="stat-label">"I'm lost" check-ins</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.quizzes_taken || 0}</div><div class="stat-label">Quiz${r.quizzes_taken === 1 ? '' : 'zes'} taken</div></div>
+      <div class="stat-tile"><div class="stat-num">${scorePercent(r.quiz_correct, r.quiz_answered)}</div><div class="stat-label">Quiz average</div></div>
     </div>`;
   document.getElementById('studentDetailBack').addEventListener('click', () => openClassDetail(cls.id));
 }
@@ -557,7 +575,16 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
 
   // For each reading, count sessions and how many debug spots are open / resolved / still "stuck".
   const cards = await Promise.all(readings.map(async (r) => {
-    const { data: sessions } = await supa.from('sessions').select('id').eq('reading_id', r.id);
+    // Reading sessions only. A quiz attempt also creates a sessions row, so
+    // without this filter the count on this card disagrees with the tiles at
+    // the top of the class, which go through teacher_class_progress() and do
+    // filter. Needs session_kind_migration.sql; falls back to the old
+    // unfiltered count if that has not been run yet.
+    let { data: sessions } = await supa.from('sessions')
+      .select('id').eq('reading_id', r.id).eq('kind', 'reading');
+    if (!sessions) {
+      ({ data: sessions } = await supa.from('sessions').select('id').eq('reading_id', r.id));
+    }
     const sessionCount = sessions ? sessions.length : 0;
     let stuck = 0, resolved = 0, open = 0;
     if (sessionCount) {
@@ -575,6 +602,7 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
           <p class="meta">Added ${when} &middot; ${sessionCount} student session${sessionCount === 1 ? '' : 's'}${sessionCount ? ` &middot; ${resolved} cleared up &middot; ${stuck} still stuck` : ''}</p>
         </div>
         <div class="row" style="gap:10px">
+          ${classId ? '<button class="tiny" type="button" data-act="quiz">Make a quiz</button>' : ''}
           <button class="tiny" type="button" data-act="preview">Show text</button>
           <button class="tiny danger" type="button" data-act="delete">Delete</button>
         </div>
@@ -593,6 +621,11 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
       box.innerHTML = box.dataset.body.split(/\n\s*\n/).map(p => `<p>${escapeHtml(p)}</p>`).join('');
     }
   }));
+  list.querySelectorAll('[data-act="quiz"]').forEach(btn => btn.addEventListener('click', () => {
+    const card = btn.closest('.reading-card');
+    const reading = readings.find(r => r.id === card.dataset.reading);
+    if (reading) openQuizSettings(reading);
+  }));
   list.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('.reading-card');
     if (!confirm('Delete this reading? Student sessions on it will be deleted too.')) return;
@@ -600,6 +633,419 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
     if (error) { alert('Could not delete: ' + error.message); return; }
     loadReadingsInto(list, teacherId, classId, emptyMessage);
   }));
+}
+
+
+/* ====================================================================
+   TEACHER-MADE QUIZZES
+
+   A teacher generates a quiz from one of their class readings, checks the
+   questions, edits or removes any that do not work, then assigns it. The
+   questions are saved, so every student in the class answers the same set
+   and the scores can be compared. Needs teacher_quizzes_migration.sql.
+   ==================================================================== */
+
+let currentClass = null;   // set by openClassDetail, used by the quiz builder
+
+/* The rest of this page only talks to Supabase. Generating a quiz needs the
+   AI backend, the same address the student page uses, which lives in
+   config.js so it is set in one place at deploy time. */
+const QUIZ_CONFIG = Object.assign(
+  { API_BASE: 'http://localhost:8000' },
+  window.APP_CONFIG || {}
+);
+
+async function generateQuizQuestions({ text, n, kinds, language }) {
+  if (!QUIZ_CONFIG.API_BASE) throw new Error('No backend address is set. Add API_BASE to config.js.');
+  const r = await fetch(QUIZ_CONFIG.API_BASE.replace(/\/$/, '') + '/quiz', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, n, kinds, language: language === 'auto' ? null : language })
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json()).detail || ''; } catch (e) { /* error body wasn't JSON */ }
+    throw new Error(detail || `The backend answered with ${r.status}.`);
+  }
+  const d = await r.json();
+  if (!d.questions || !d.questions.length) throw new Error('The backend returned no questions.');
+  return d.questions;
+}
+
+function openQuizSettings(reading) {
+  const dlg = document.getElementById('quizDlg');
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3 style="margin:0 0 4px">Make a quiz</h3>
+      <p class="small" style="margin:0 0 14px">From &ldquo;${escapeHtml(reading.title)}&rdquo;. You see the questions before the class does.</p>
+
+      <label class="f" for="qzTitle">Title</label>
+      <input type="text" id="qzTitle" value="${escapeHtml(reading.title)}" required>
+
+      <label class="f" for="qzNote">Instructions for the class, optional</label>
+      <input type="text" id="qzNote" placeholder="e.g. Answer after reading the whole text">
+
+      <label class="f" for="qzN">How many questions</label>
+      <select id="qzN">${[3, 4, 5, 6, 8, 10].map(n => `<option value="${n}"${n === 5 ? ' selected' : ''}>${n} questions</option>`).join('')}</select>
+
+      <label class="f" for="qzKinds">Question types</label>
+      <select id="qzKinds">
+        <option value="mixed" selected>Mixed, literal and inferential</option>
+        <option value="literal">Literal only, answers stated in the text</option>
+        <option value="inferential">Inferential only, answers worked out from clues</option>
+      </select>
+
+      <label class="f" for="qzLang">Language of the choices</label>
+      <select id="qzLang">
+        <option value="auto" selected>Follow the reading</option>
+        <option value="en">English</option>
+        <option value="fil">Filipino</option>
+      </select>
+      <p class="small" style="margin:6px 0 0">The questions are written from the reading itself, so they come out in the reading's language. This setting controls the answer choices and the explanations.</p>
+
+      <div class="row" style="margin-top:14px; justify-content:flex-end">
+        <button class="btn alt" value="cancel">Cancel</button>
+        <button class="btn" id="qzGo" value="ok">Generate</button>
+      </div>
+    </form>`;
+  dlg.showModal();
+  document.getElementById('qzGo').addEventListener('click', (e) => {
+    e.preventDefault();
+    const settings = {
+      title: document.getElementById('qzTitle').value.trim() || reading.title,
+      instructions: document.getElementById('qzNote').value.trim(),
+      n: +document.getElementById('qzN').value,
+      kinds: document.getElementById('qzKinds').value,
+      language: document.getElementById('qzLang').value
+    };
+    dlg.close();
+    buildQuiz(reading, settings);
+  });
+}
+
+/* "3 of 4" as a percentage, or a dash when nothing has been answered, so a
+   student who has not taken a quiz does not read as scoring zero. */
+function scorePercent(correct, answered) {
+  if (!answered) return '--';
+  return Math.round((Number(correct) / Number(answered)) * 100) + '%';
+}
+
+/* The class average across every assigned quiz: total correct over total
+   answered, counting each question once per student. */
+function classQuizAverage(rows) {
+  const answered = (rows || []).reduce((t, r) => t + Number(r.quiz_answered || 0), 0);
+  const correct  = (rows || []).reduce((t, r) => t + Number(r.quiz_correct  || 0), 0);
+  return scorePercent(correct, answered);
+}
+
+function quizBackLink() {
+  return `<button class="ghost" id="qzBack" type="button">&larr; ${escapeHtml(currentClass.name)}</button>`;
+}
+function wireQuizBack() {
+  const b = document.getElementById('qzBack');
+  if (b) b.addEventListener('click', () => openClassDetail(currentClass.id));
+}
+
+async function buildQuiz(reading, settings) {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `${quizBackLink()}<h1>${escapeHtml(settings.title)}</h1>
+    <p class="hint">Writing ${settings.n} questions from &ldquo;${escapeHtml(reading.title)}&rdquo;. This can take a minute.</p>`;
+  wireQuizBack();
+
+  let questions;
+  try {
+    questions = await generateQuizQuestions({ text: reading.body, ...settings });
+  } catch (err) {
+    el.innerHTML = `${quizBackLink()}<h1>${escapeHtml(settings.title)}</h1>
+      <div class="card"><b>Could not make the quiz</b>
+        <p style="margin:6px 0 0">${escapeHtml(err.message)}</p></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="qzRetry" type="button">Try again</button>
+      </div>`;
+    wireQuizBack();
+    document.getElementById('qzRetry').addEventListener('click', () => buildQuiz(reading, settings));
+    return;
+  }
+  renderQuizReview(reading, settings, questions);
+}
+
+/* The review step. Everything here is editable, and nothing reaches a
+   student until Assign is pressed. */
+function renderQuizReview(reading, settings, questions) {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `
+    ${quizBackLink()}
+    <h1>${escapeHtml(settings.title)}</h1>
+    <p class="hint">Check these before the class sees them. Edit the wording, change which answer is correct, or remove any that do not work. Nothing is visible to students until you assign it.</p>
+    <div id="qzList"></div>
+    <div class="row" style="margin-top:16px">
+      <button class="btn" id="qzAssign" type="button">Assign to ${escapeHtml(currentClass.name)}</button>
+      <button class="btn alt" id="qzRegen" type="button">Generate different questions</button>
+    </div>
+    <p class="small" id="qzMsg" style="margin-top:10px"></p>`;
+  wireQuizBack();
+
+  const list = document.getElementById('qzList');
+  const msg = document.getElementById('qzMsg');
+
+  const draw = () => {
+    if (!questions.length) {
+      list.innerHTML = '<p class="small">You removed every question. Generate a different set, or go back.</p>';
+      return;
+    }
+    list.innerHTML = questions.map((q, i) => `
+      <div class="card" data-q="${i}">
+        <div class="row-top">
+          <span class="tag">${escapeHtml(q.kind || 'Question')}</span>
+          <button class="tiny danger" type="button" data-act="drop">Remove</button>
+        </div>
+        <label class="f">Question ${i + 1}</label>
+        <input type="text" data-field="q" value="${escapeHtml(q.q)}">
+        <label class="f" style="margin-top:10px">Choices. Select the correct one.</label>
+        ${q.options.map((o, j) => `
+          <div class="row" style="align-items:center; gap:8px; margin-bottom:6px">
+            <input type="radio" name="ans${i}" data-ans="${j}"${j === q.answer ? ' checked' : ''} style="width:auto">
+            <input type="text" data-opt="${j}" value="${escapeHtml(o)}" style="flex:1">
+          </div>`).join('')}
+        <label class="f" style="margin-top:10px">Why that answer is right</label>
+        <input type="text" data-field="why" value="${escapeHtml(q.why || '')}">
+        ${q.evidence ? `<p class="small" style="margin:8px 0 0">From the text: &ldquo;${escapeHtml(q.evidence)}&rdquo;</p>` : ''}
+      </div>`).join('');
+
+    list.querySelectorAll('[data-q]').forEach(card => {
+      const i = +card.dataset.q;
+      card.querySelectorAll('input[data-field]').forEach(inp => {
+        inp.addEventListener('input', () => { questions[i][inp.dataset.field] = inp.value; });
+      });
+      card.querySelectorAll('input[data-opt]').forEach(inp => {
+        inp.addEventListener('input', () => { questions[i].options[+inp.dataset.opt] = inp.value; });
+      });
+      card.querySelectorAll('input[data-ans]').forEach(rad => {
+        rad.addEventListener('change', () => { questions[i].answer = +rad.dataset.ans; });
+      });
+      card.querySelector('[data-act="drop"]').addEventListener('click', () => {
+        questions.splice(i, 1);
+        draw();
+      });
+    });
+  };
+  draw();
+
+  document.getElementById('qzRegen').addEventListener('click', () => buildQuiz(reading, settings));
+  document.getElementById('qzAssign').addEventListener('click', async () => {
+    const btn = document.getElementById('qzAssign');
+    if (!questions.length) { msg.textContent = 'There are no questions to assign.'; return; }
+    const bad = questions.findIndex(q =>
+      !q.q.trim() || q.options.some(o => !String(o).trim()) || q.answer == null);
+    if (bad > -1) { msg.textContent = `Question ${bad + 1} has an empty field.`; return; }
+
+    btn.disabled = true;
+    msg.textContent = 'Assigning...';
+    try {
+      await saveQuiz(reading, settings, questions);
+      showToast('Quiz assigned to the class.', 'ok');
+      openClassDetail(currentClass.id);
+    } catch (err) {
+      msg.textContent = 'Could not assign: ' + err.message;
+      btn.disabled = false;
+    }
+  });
+}
+
+async function saveQuiz(reading, settings, questions) {
+  const { data: quiz, error } = await supa.from('quizzes').insert({
+    class_id: currentClass.id,
+    reading_id: reading.id,
+    teacher_id: currentProfile.id,
+    title: settings.title,
+    instructions: settings.instructions || null,
+    language: settings.language,
+    kinds: settings.kinds,
+    published: true
+  }).select('id').single();
+  if (error) throw error;
+
+  const rows = questions.map((q, i) => ({
+    quiz_id: quiz.id,
+    position: i,
+    kind: q.kind || 'Question',
+    q: q.q,
+    options: q.options,
+    answer: q.answer,
+    why: q.why || null,
+    evidence: q.evidence || null
+  }));
+  const { error: qErr } = await supa.from('quiz_questions').insert(rows);
+  if (qErr) {
+    // Without the questions the quiz is an empty shell that students would
+    // still see, so take it back out rather than leave it assigned.
+    await supa.from('quizzes').delete().eq('id', quiz.id);
+    throw qErr;
+  }
+}
+
+/* The list of assigned quizzes inside a class. */
+async function loadClassQuizzes(container, classId) {
+  container.innerHTML = '<p class="small">Loading...</p>';
+  const { data: quizzes, error } = await supa
+    .from('quizzes')
+    .select('id, title, created_at, kinds, language, reading_id')
+    .eq('class_id', classId)
+    .order('created_at', { ascending: false });
+  if (error) {
+    const needs = /relation .* does not exist|schema cache/i.test(error.message);
+    container.innerHTML = `<p class="small" style="color:var(--bug)">${escapeHtml(error.message)}${
+      needs ? ' Run teacher_quizzes_migration.sql in Supabase first.' : ''}</p>`;
+    return;
+  }
+  if (!quizzes.length) {
+    container.innerHTML = '<p class="small">No quizzes yet. Use "Make a quiz" on any reading below.</p>';
+    return;
+  }
+
+  const counts = {};
+  const ids = quizzes.map(q => q.id);
+  const { data: qq } = await supa.from('quiz_questions').select('quiz_id').in('quiz_id', ids);
+  (qq || []).forEach(r => { counts[r.quiz_id] = (counts[r.quiz_id] || 0) + 1; });
+
+  container.innerHTML = quizzes.map(z => `
+    <div class="reading-row-card" data-quiz="${z.id}" tabindex="0" role="button">
+      <div>
+        <b>${escapeHtml(z.title)}</b>
+        <div class="small">${counts[z.id] || 0} question${counts[z.id] === 1 ? '' : 's'}
+          &middot; ${escapeHtml(z.kinds)}
+          &middot; assigned ${new Date(z.created_at).toLocaleDateString()}</div>
+      </div>
+      <button class="tiny danger" type="button" data-act="unassign">Unassign</button>
+    </div>`).join('');
+
+  container.querySelectorAll('[data-act="unassign"]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirm('Unassign this quiz? Students will no longer see it. Answers already given are kept.')) return;
+    const row = btn.closest('[data-quiz]');
+    const { error: delErr } = await supa.from('quizzes').delete().eq('id', row.dataset.quiz);
+    if (delErr) { showToast('Could not unassign: ' + delErr.message, 'bug'); return; }
+    showToast('Quiz unassigned.', 'ok');
+    loadClassQuizzes(container, classId);
+  }));
+
+  container.querySelectorAll('[data-quiz]').forEach(row => {
+    const open = () => {
+      const z = quizzes.find(x => x.id === row.dataset.quiz);
+      if (z) renderQuizResults(z);
+    };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
+}
+
+/* How the class did on one assigned quiz. */
+async function renderQuizResults(quiz) {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `${quizBackLink()}<h1>${escapeHtml(quiz.title)}</h1><p class="hint">Loading...</p>`;
+  wireQuizBack();
+
+  const [{ data: rows, error }, { data: questions }, { data: perQuestion }] = await Promise.all([
+    supa.rpc('teacher_quiz_results', { p_quiz_id: quiz.id }),
+    supa.from('quiz_questions').select('position, kind, q, options, answer, why')
+        .eq('quiz_id', quiz.id).order('position'),
+    supa.rpc('teacher_quiz_question_stats', { p_quiz_id: quiz.id })
+  ]);
+  const stats = {};
+  (perQuestion || []).forEach(x => { stats[x.position] = x; });
+
+  const resultsHtml = error
+    ? `<p class="small" style="color:var(--bug)">Could not load results: ${escapeHtml(error.message)}</p>`
+    : !rows || !rows.length
+      ? '<p class="small">No students have joined this class yet.</p>'
+      : `<div style="display:flex; flex-direction:column; gap:10px">${rows.map(r => `
+          <div class="reading-row-card student-quiz-row" data-student="${r.student_id}"
+               tabindex="0" role="button" aria-label="See ${escapeHtml(r.full_name || 'this student')}'s answers">
+            <div>
+              <b>${escapeHtml(r.full_name || '(no name)')}</b>
+              <div class="small">${r.answered
+                ? `${r.correct} of ${r.answered} correct${r.attempts > r.answered ? ` &middot; answered again later, first try counted` : ''}`
+                : 'Not taken yet'}</div>
+            </div>
+          </div>`).join('')}</div>`;
+
+  el.innerHTML = `
+    ${quizBackLink()}
+    <h1>${escapeHtml(quiz.title)}</h1>
+    <p class="hint">Assigned ${new Date(quiz.created_at).toLocaleDateString()}.</p>
+    <h3 style="margin:22px 0 4px">Class results</h3>
+    ${resultsHtml}
+    <h3 style="margin:28px 0 4px">The questions</h3>
+    <div style="display:flex; flex-direction:column; gap:10px">${(questions || []).map((q, i) => `
+      <div class="card">
+        <div class="row-top">
+          <span class="tag">${escapeHtml(q.kind)}</span>
+          <span class="small">${stats[q.position]
+            ? (stats[q.position].answered
+                ? `${stats[q.position].correct} of ${stats[q.position].answered} got this right`
+                : 'Nobody has answered this yet')
+            : ''}</span>
+        </div>
+        <div><b>${i + 1}. ${escapeHtml(q.q)}</b></div>
+        ${q.options.map((o, j) => `<div class="small"${j === q.answer ? ' style="font-weight:600"' : ''}>${j === q.answer ? '&#10003; ' : ''}${escapeHtml(o)}</div>`).join('')}
+        ${q.why ? `<p class="small" style="margin:8px 0 0">${escapeHtml(q.why)}</p>` : ''}
+      </div>`).join('')}</div>`;
+  wireQuizBack();
+
+  el.querySelectorAll('.student-quiz-row').forEach(row => {
+    const open = () => {
+      const r = (rows || []).find(x => x.student_id === row.dataset.student);
+      if (r) renderStudentQuizAnswers(quiz, r);
+    };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
+}
+
+/* What one student actually answered. Each question shows every choice, with
+   the correct one marked and the student's pick marked, so a teacher can see
+   which wrong answer attracted them rather than only that they were wrong. */
+async function renderStudentQuizAnswers(quiz, student) {
+  const el = document.getElementById('classesPane');
+  const back = `<button class="ghost" id="qzSBack" type="button">&larr; ${escapeHtml(quiz.title)}</button>`;
+  el.innerHTML = `${back}<h1>${escapeHtml(student.full_name || '(no name)')}</h1><p class="hint">Loading...</p>`;
+  document.getElementById('qzSBack').addEventListener('click', () => renderQuizResults(quiz));
+
+  const { data, error } = await supa.rpc('teacher_quiz_student_answers', {
+    p_quiz_id: quiz.id, p_student_id: student.student_id
+  });
+
+  const body = error
+    ? `<p class="small" style="color:var(--bug)">Could not load answers: ${escapeHtml(error.message)}</p>`
+    : `<div style="display:flex; flex-direction:column; gap:10px">${(data || []).map((row, i) => `
+        <div class="card">
+          <div class="row-top">
+            <span class="tag">${escapeHtml(row.kind)}</span>
+            <span class="small">${row.chosen == null ? 'Not answered'
+              : row.was_correct ? 'Correct' : 'Wrong'}</span>
+          </div>
+          <div><b>${i + 1}. ${escapeHtml(row.q)}</b></div>
+          ${(row.options || []).map((o, j) => {
+            const isRight = j === row.answer;
+            const isPick = row.chosen != null && o === row.chosen;
+            const mark = isRight ? '&#10003;' : isPick ? '&#10007;' : '&nbsp;&nbsp;';
+            return `<div class="small"${isRight || isPick ? ' style="font-weight:600"' : ''}>${mark} ${escapeHtml(o)}${
+              isPick ? ' &mdash; their answer' : ''}</div>`;
+          }).join('')}
+        </div>`).join('')}</div>`;
+
+  el.innerHTML = `
+    ${back}
+    <h1>${escapeHtml(student.full_name || '(no name)')}</h1>
+    <p class="hint">${escapeHtml(quiz.title)} &middot; ${
+      student.answered ? `${student.correct} of ${student.answered} correct` : 'Not taken yet'}${
+      student.attempts > student.answered ? ' &middot; answered again later, first try shown' : ''}</p>
+    ${body}`;
+  document.getElementById('qzSBack').addEventListener('click', () => renderQuizResults(quiz));
 }
 
 function escapeHtml(s) {
