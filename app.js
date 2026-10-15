@@ -2,7 +2,21 @@
    on the built-in offline demo. Three endpoints get called: POST /partner
    (debug hints), POST /quiz (quiz questions), POST /checkin (check-in
    prompts). If the backend's unreachable, the app quietly falls back to
-   offline demo answers. */
+   offline demo answers -- which is exactly why this is easy to miss: it
+   never throws an error, it just quietly stops being the real AI.
+
+   If you're hosting this frontend on Vercel (or anywhere other than the
+   same machine as the Python backend), "http://localhost:8000" is wrong
+   for anyone except you, on your own computer, while the backend happens
+   to be running right there too. The model (SEA-LION/SeaLLM or T5) runs
+   locally on a groupmate's laptop, Vercel can't run that for you, it
+   only hosts this static frontend. So the backend still has to run on
+   that laptop, reachable through something like an ngrok tunnel
+   (`ngrok http 8000`, after the main.py fix that lets it accept outside
+   connections), and this needs to point at *that* tunnel's https URL,
+   not localhost. ngrok's free-tier URL changes every time it restarts,
+   so update this line and redeploy right before a demo rather than once
+   and forgetting about it. */
 const CONFIG = {
   API_BASE: "http://localhost:8000",
   CHECKIN_EVERY_SEC: 90
@@ -910,7 +924,13 @@ async function renderHistoryView() {
     .order('created_at', { ascending: false });
 
   if (error) {
-    el.innerHTML = `<h1>Your history</h1><p class="small" style="color:var(--bug)">Could not load your history: ${esc(error.message)}</p>`;
+    // A missing column is a setup problem, not something the student did
+    // wrong, so say which migration fixes it instead of showing them the
+    // raw Postgres message and leaving them stuck.
+    const needsMigration = /created_at|column .* does not exist/i.test(error.message);
+    el.innerHTML = `<h1>Your history</h1><p class="small" style="color:var(--bug)">Could not load your history: ${esc(error.message)}${
+      needsMigration ? '. Run sessions_created_at_migration.sql in Supabase to add the missing column.' : ''
+    }</p>`;
     return;
   }
   if (!sessions || !sessions.length) {
