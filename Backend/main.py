@@ -67,17 +67,8 @@ T5_MODEL_NAME = "Aiken1016/MT5_Final_Model"
 
 print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
 
-# The model was saved with transformers 5.x, which writes extra_special_tokens as a list;
-# 4.x expects a dict and crashes on load. Passing an empty dict works on both.
 qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
-# mT5 has its own output layer (lm_head), separate from the input embeddings, and the
-# checkpoint stores both. Its config says tie_word_embeddings=true (written by 5.x), which
-# makes 4.x drop the trained lm_head and reuse the embeddings, so every output is garbage
-# ("01.01.201 ...") that never ends. Force them untied.
 qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME, tie_word_embeddings=False)
-
-# CPU by default: the mT5 is 2.3 GB in fp32, and next to the 4-bit 9B model (~6.5 GB)
-# it would not fit in 8 GB of VRAM. Set QG_DEVICE=cuda to try the GPU anyway.
 qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
 qg_model.to(qg_device)
 qg_model.eval()
@@ -86,10 +77,6 @@ print("T5 question-generation model loaded successfully!")
 
 app = FastAPI(title="Reading Partner backend")
 
-# Lets the widget (a different address) talk to this backend. For the hosted site, set
-# ALLOWED_ORIGINS to its address(es), comma-separated, e.g.
-#   $env:ALLOWED_ORIGINS = "https://jin-miwacle.github.io"
-# Unset = allow any origin (fine for local testing).
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 print(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 app.add_middleware(
@@ -223,9 +210,6 @@ _REQUEST_FILLER = {
 }
 
 def language_request(text):
-    """'en' / 'fil' only if the message is JUST a language request ("in english please",
-    "sa tagalog po"). An answer that mentions a language ("dusk sa tagalog ay takipsilim")
-    is not a request, so it does not switch the language or become a "repeat" turn."""
     if not text:
         return None
     for lang, pattern in (("en", _EN_REQUEST), ("fil", _FIL_REQUEST)):
@@ -242,14 +226,11 @@ _LANG_ALIASES = {
 }
 
 def normalize_language(value):
-    """Map whatever the frontend sends ("en", "English", "tl", "auto", ...) to "en", "fil" or None."""
     if not value:
         return None
     return _LANG_ALIASES.get(str(value).strip().lower())
 
 def pick_language(ask):
-    # 1. A request typed in this thread wins ("in english please"). History is per debug
-    #    thread, so the override lasts for this passage and the saved setting returns after.
     texts = [t.text for t in ask.history if t.role == "student"] + [ask.message or ""]
     for text in reversed(texts):
         lang = language_request(text)
@@ -314,11 +295,6 @@ def _full_explanation(p):
             f"the context, with one everyday example. End by asking them to say it in their own words.")
 
 def goal_instruction(ask):
-    """How strongly this turn should point at the student's reading goal.
-
-    Only when the selection shares a word with the goal (goal_hint) is the link stated
-    outright; otherwise the coach may mention the goal only if the link is real, so it
-    does not force a connection onto an unrelated word."""
     if not ask.goal or ask.mode in ("repeat", "stuck"):
         return ""
     if ask.mode == "success":
@@ -331,7 +307,6 @@ def goal_instruction(ask):
             "otherwise do not mention the goal.")
 
 def problem_said(ask):
-    """The student's own description of the trouble, or None (only for problem "other")."""
     if ask.problem == "other" and ask.problem_text and ask.problem_text.strip():
         return ask.problem_text.strip()[:200]
     return None
@@ -340,15 +315,11 @@ def mode_instruction(ask):
     p = ask.passage or "this part"
     said = problem_said(ask)
     if said:
-        # An f-string, not .format(): the text comes from a student, and a "{" in it
-        # would make .format() raise and turn the request into a 502.
         question = (f"ONE short, simple question aimed at exactly the trouble they described "
                     f"(\"{said}\"), not at some other difficulty you notice in the passage.")
     else:
         question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
     text = _mode_instruction(ask, p, question)
-    # Stuck and give-up turns write their own instruction and never use `question`,
-    # so carry the description into them explicitly.
     if said and ask.mode in ("stuck", "giveup"):
         text += f" They had described the trouble as: \"{said}\"."
     return text + goal_instruction(ask)
@@ -557,7 +528,6 @@ Passage:
         if not answer:
             continue
 
-        # Find the exact phrase in the original passage, ignoring case.
         start = passage.lower().find(answer.lower())
         if start == -1:
             continue
@@ -584,7 +554,7 @@ Passage:
                 num_beams=4,
                 no_repeat_ngram_size=3,
                 early_stopping=True,
-                use_cache=True  # the model's config says use_cache=false; same output, faster
+                use_cache=True
             )
 
         question = qg_tokenizer.decode(
@@ -595,9 +565,6 @@ Passage:
         if not question or question.lower() in used_questions:
             continue
 
-        # Round-trip check: mT5 answers its own question (its "answer question:" task),
-        # and the question is dropped unless that answer matches the target phrase.
-        # Catches non-questions like "the harbor below?"; costs ~1-3 s per question on CPU.
         qa_prompt = f"answer question: question: {question} context: {passage}"
         qa_inputs = qg_tokenizer(qa_prompt, return_tensors="pt", truncation=True, max_length=768)
         qa_inputs = {k: v.to(qg_device) for k, v in qa_inputs.items()}
@@ -606,7 +573,6 @@ Passage:
         predicted = qg_tokenizer.decode(qa_out[0], skip_special_tokens=True).strip()
 
         def _n(s): return re.sub(r"\W+", " ", s.lower()).strip()
-        # Empty-prediction guard: "" is "in" every string, so it would always pass.
         if not _n(predicted) or not (_n(exact_answer) in _n(predicted) or _n(predicted) in _n(exact_answer)):
             print(f"[Quiz] Dropped (mT5 answer mismatch): {question} -> {predicted}")
             continue
@@ -782,18 +748,14 @@ Questions and correct answers:
         print(f"[Quiz] JSON error: {e}")
         print("[Quiz] Attempting to repair JSON...")
 
-        # (No local "import re" here: it would make re local to the whole of
-        # generate_quiz and break every earlier use of re in this function.)
         repaired = re.sub(r",\s*([}\]])", r"\1", raw_options.strip())
 
         # Close missing JSON structures when the output is truncated.
         try:
             options_data = parse_json_response(repaired)
         except json.JSONDecodeError:
-            # Remove an incomplete trailing comma, if present.
             repaired = repaired.rstrip()
 
-            # Add missing closing brackets/braces based on open structures.
             stack = []
             in_string = False
             escaped = False
@@ -903,8 +865,6 @@ Questions and correct answers:
         def normalize_text(text):
             return " ".join(text.casefold().split())
 
-        # Trust SEA-LION's selected answer index instead of replacing
-        # its concise answer with the original passage answer.
         final_answer_index = answer_index
         correct_option = options[final_answer_index]
 
@@ -1011,7 +971,6 @@ def generate_checkin(ask: CheckinAsk) -> str:
 # =====================================================================
 @app.get("/")
 def health():
-    """Open http://localhost:8000 in a browser to check the server is running."""
     return {
         "status": "ok",
         "endpoints": ["/partner", "/quiz", "/checkin"],
@@ -1027,16 +986,14 @@ def partner(ask: Ask):
     try:
         requested = ask.mode
         if requested == "stuck":
-            ask.mode = "stuck"    # the "Still stuck" button: an explicit signal, sent with no message
+            ask.mode = "stuck"
         elif not ask.message:
             ask.mode = "debug"
         elif language_request(ask.message) and len(ask.message.split()) <= 5:
-            ask.mode = "repeat"   # "in english please" is not an answer
+            ask.mode = "repeat"
         else:
             ask.mode = classify_intent(ask.message, target_passage=ask.passage,
                                        last_coach=last_coach_line(ask))
-            # The widget sends "giveup" after a few unresolved follow-ups. Explain fully
-            # then, unless the student just showed they understood.
             if requested == "giveup" and ask.mode != "success":
                 ask.mode = "giveup"
  
