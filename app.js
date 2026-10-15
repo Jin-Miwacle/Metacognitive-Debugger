@@ -252,16 +252,26 @@ async function callBackend(path, body) {
   return null;
 }
 
+/* The backend reports which kind of turn it decided this was (debug,
+   followup, stuck, success, repeat) alongside the reply. That has to be
+   kept and sent back with the history: the backend works out how stuck a
+   student is by counting how many earlier coach turns were "stuck", so if
+   the history arrives without it the count is always zero, the escalation
+   stays on its first rung, and a student who keeps saying "I don't know"
+   is asked an easier question forever instead of eventually being given
+   the explanation. */
 async function askPartner(payload) {
   const d = await callBackend('/partner', payload);
-  if (d && d.reply) return { reply: d.reply, demo: false };
+  if (d && d.reply) return { reply: d.reply, mode: d.mode || null, demo: false };
   await new Promise(r => setTimeout(r, 450));
   let reply;
   if (payload.mode === 'debug') reply = pick(DEMO_REPLIES[payload.problem] || DEMO_REPLIES.lost);
   else if (payload.mode === 'giveup') reply = pick(DEMO_REPLIES.giveup);
   else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
   else reply = pick(DEMO_REPLIES.followup);
-  return { reply, demo: true };
+  // Offline replies carry the mode the frontend asked for, so the ladder
+  // still behaves sensibly when the backend is unreachable.
+  return { reply, mode: payload.mode || null, demo: true };
 }
 
 function partnerPayload(mode, t, message) {
@@ -272,7 +282,13 @@ function partnerPayload(mode, t, message) {
     // 'auto' means let the backend detect the passage's language itself;
     // anything else is an explicit override from the Progress tab toggle.
     response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage,
-    history: t.msgs.filter(m => !m.typing).map(m => ({ role: m.from === 'you' ? 'student' : 'coach', text: m.text }))
+    history: t.msgs.filter(m => !m.typing).map(m => ({
+      role: m.from === 'you' ? 'student' : 'coach',
+      text: m.text,
+      // the backend counts coach turns with mode "stuck" to decide how
+      // much help to give next, so this has to survive the round trip
+      mode: m.mode || null
+    }))
   };
 }
 
@@ -483,7 +499,7 @@ function startDebug(problem) {
   dbInsertDebugEvent(t);
   renderDebug();
   askPartner(partnerPayload('debug', t))
-    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, demo: r.demo }]; renderDebug(); dbSaveTranscript(t); });
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }]; renderDebug(); dbSaveTranscript(t); });
 }
 function wrapRange(range, id) {
   const mark = document.createElement('mark');
@@ -503,7 +519,7 @@ async function sendFollowup(id, message) {
   logEvent('debug_reply', { id, message, mode });
   renderDebug();
   const r = await askPartner(payload);
-  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
+  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   if (mode === 'giveup') t.gaveUp = true;
   renderDebug();
   dbSaveTranscript(t);
@@ -524,8 +540,17 @@ async function markStuck(id) {
   logEvent('debug_stuck', { id });
   nudgeSupport(2);
   dbUpdateDebugStatus(t);
-  const r = await askPartner(partnerPayload('stuck', t));
-  t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
+  // Pressing "Still stuck" has to reach the backend as something the
+  // student said. The backend decides what kind of turn this is from
+  // ask.message, and its first branch is "no message means a fresh first
+  // hint" -- so with an empty message this button produced an opening
+  // hint rather than the escalation it exists for. Recording it as a
+  // student line also keeps the saved transcript faithful, which matters
+  // because that transcript is evaluation data.
+  const stuckSays = "I'm still stuck.";
+  t.msgs.push({ from: 'you', text: stuckSays });
+  const r = await askPartner(partnerPayload('stuck', t, stuckSays));
+  t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   renderDebug();
   dbSaveTranscript(t);
 }
@@ -550,7 +575,8 @@ async function fireCheckin() {
     support: state.support.level,
     text: reader.innerText.trim().slice(0, 6000),
     struggles: state.threads.map(t => t.text).slice(-5),
-    previous: c.shown.slice(-5)
+    previous: c.shown.slice(-5),
+    response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage
   });
   let prompt, source;
   if (d && d.prompt) { prompt = d.prompt; source = 'ai'; }
