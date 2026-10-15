@@ -28,8 +28,9 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-/* Built-in practice readings: plain text, blank line between paragraphs.
-   Work in both Readings and Quizzes without a teacher or database. */
+/* Built-in practice readings -- plain text, blank line between paragraphs --
+   so both the Readings view and the Quizzes view (which has no reader open)
+   can use them without needing a teacher or the database at all. */
 const DEMO_READINGS = [
   {
     id: 'demo-lamp',
@@ -60,11 +61,21 @@ Nobody suggested she explain herself again after that. The following spring, thr
 She looked him up before she decided what to do with any of it. Mr. Oyelaran had taught music at the school across the street until it closed in the nineties; the library had no record of him after that. Still, she ordered a new needle, cleaned the turntable herself over a weekend, and played the first record in the box just to test it.
 
 It was a recording of a school choir, slightly out of tune, dated the same year the label was written. Priya didn't know whose voice was whose. She reshelved the player in the front room anyway, with a handwritten card of her own: "Ask at the desk to listen."`
+  },
+  {
+    id: 'demo-noli',
+    title: 'Kabanata 1',
+    text:
+`Isang marangyang salu-salo ang ipinag-anyaya ni Don Santiago de los Santos na higit na popular sa taguring Kapitan Tiago.  Ang handaan ay gagawin sa kanyang bahay na nasa daang Anluwage na karatig ng Ilog-Binundok.
+
+Ang paayaya ay madaling kumalat sa lahat ng sulok ng Maynila.  Bawat isa ay gustong dumalo sapagkat ang mayamang Kapitan ay kilala bilang isang mabuting tao, mapagbigay at laging bukas ang palad sa mga nangangailangan.  Dahil dito, ang iba ay nababalino kung ano ang isusuot at sasabihin sa mismong araw ng handaan.
+
+Nang gabing iyon dagsa ang mga panauhin na gaya ng dapat asahan.  Puno ang bulwagan.  Ang nag-iistima sa mgta bisita ay si Tiya Isabel, isang matandang babae na pinsan ng may-bahay.  Kabilang sa mga bisita sina Tinyente ng guardia civil, Pari Sibyla, ang Kura paroko ng Binundok, si Padre Damaso na madaldal at mahahayap ang mga salita at dalawang Paisano.  Ang isa ay kararating lamang sa Pilipinas.`
   }
 ];
 const DEMO_READING_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3.6 4.8 7.4l7.2 3.8 7.2-3.8Z"/><path d="M4.8 7.4v9l7.2 3.8 7.2-3.8v-9"/><path d="M12 11.2v9"/></svg>`;
 
-/* ---- Reading workspace state (Goal / Debug / Check-in / Progress) ---- */
+/* ---------- State for the reading workspace (Goal / Debug / Check-in / Progress) ---------- */
 const state = {
   goal: null,            // { text, confidence }
   threads: [],           // debug sessions
@@ -185,7 +196,7 @@ async function dbInsertCheckin(prompt, level, answer) {
   if (error) console.warn('Could not save the check-in:', error.message);
 }
 
-/* ---- Offline demo quiz: backend-unavailable fallback, lamp story only ---- */
+/* ---------- Offline demo quiz (used only if the backend is unavailable, and only for the demo story) ---------- */
 const OFFLINE_QUIZ = [
   { kind: 'Literal', q: 'How many steps does Mara climb to reach the lamp?',
     options: ['Nineteen', 'Ninety-one', 'Ninety-nine', 'One hundred nine'], answer: 1,
@@ -198,7 +209,7 @@ const OFFLINE_QUIZ = [
     why: 'He had never met her, so he must have known her from something else: the old signal that the keepers use.' }
 ];
 
-/* ---- The four debug problem types ---- */
+/* ---------- The four kinds of trouble a student can pick ---------- */
 const PROBLEMS = {
   vocab:   { label: 'A word I don’t know', sub: 'Unfamiliar or tricky word' },
   lost:    { label: 'I lost the point',       sub: 'I read it but it didn’t land' },
@@ -210,7 +221,7 @@ const PROBLEMS = {
    wording in problem_text, so "other" is a real problem key even though it
    is deliberately not a button here. */
 
-/* ---- Offline demo replies: backend-unavailable fallback ---- */
+/* ---------- Offline demo replies (used ONLY if the backend can't be reached) ---------- */
 const DEMO_REPLIES = {
   vocab: [
     'Pick the one word that blocks you. Reread the sentence with that word skipped. Do you still get the gist? Then look at the sentences around it for clues: an example, a contrast, or a restatement.',
@@ -248,7 +259,7 @@ const DEMO_REPLIES = {
 };
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-/* ---- Backend calls ---- */
+/* ---------- Talking to the backend ---------- */
 async function callBackend(path, body) {
   if (!CONFIG.API_BASE) return null;
   try {
@@ -319,10 +330,10 @@ const OFFLINE_CHECKINS = [
   'Which sentence would you reread if you had to explain this to a friend?'
 ];
 
-/* ---- Elements ---- */
+/* ---------- Elements ---------- */
 const reader = $('#reader');
 
-/* ---- Side-panel tabs (Goal / Debug / Check-in / Progress) ---- */
+/* ---------- Side-panel tabs (Goal / Debug / Check-in / Progress) ---------- */
 function setTab(name) {
   $$('.tab').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
   $$('.panel').forEach(p => p.hidden = p.id !== 'p-' + name);
@@ -364,7 +375,9 @@ function wireGoalForm(scope, g, onDone) {
     $('#goalLine').textContent = 'Goal: ' + text;
     if (state.session.id) dbUpdateSession({ goal: text, confidence: conf });
     else ensureSession();
-    // Low confidence starts check-ins closer together; high confidence starts relaxed.
+    // Low confidence starts check-ins closer together; high confidence starts
+    // relaxed. This has to run before startCheckins(), or the first countdown
+    // is set from the old level and never reflects what they just told us.
     nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
     if (!state.checkin.on) startCheckins();
     if (onDone) onDone();
@@ -415,7 +428,7 @@ function showGoalPopup() {
   dlg.showModal();
 }
 
-/* ---- Text selection -> Debug ---- */
+/* ---------- Text selection -> Debug ---------- */
 let selTimer = null;
 document.addEventListener('selectionchange', () => {
   clearTimeout(selTimer);
@@ -439,7 +452,7 @@ function closestP(node) {
   return el ? el.closest('#reader p') : null;
 }
 
-/* ---- Debug tab ---- */
+/* ---------- Debug tab ---------- */
 function shorten(s, n = 90) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
 /* What the tag on an open thread says. For the four fixed types that's their
@@ -612,7 +625,6 @@ async function markStuck(id) {
   t.status = 'stuck'; t.busy = true; t.gaveUp = true;
   if (t.mark) t.mark.classList.add('stuck');
   logEvent('debug_stuck', { id });
-  nudgeSupport(2);
   dbUpdateDebugStatus(t);
   // Pressing "Still stuck" has to reach the backend as something the
   // student said. The backend decides what kind of turn this is from
@@ -646,7 +658,6 @@ async function fireCheckin() {
   if (currentTab() === 'monitor') renderCheckin();
   const d = await callBackend('/checkin', {
     goal: state.goal && state.goal.text,
-    support: state.support.level,
     text: reader.innerText.trim().slice(0, 6000),
     struggles: state.threads.map(t => t.text).slice(-5),
     previous: c.shown.slice(-5),
@@ -667,13 +678,9 @@ async function fireCheckin() {
 }
 function renderCheckin() {
   const c = state.checkin, el = $('#p-monitor');
-  const supportNote = state.support.level !== 'steady'
-    ? `<p class="small" style="color:var(--accent)">${state.support.level === 'extra' ? 'Extra support is on, so these are firing faster than your setting below.' : 'Firing a bit faster than your setting below, since a few spots have been tricky.'}</p>`
-    : '';
   el.innerHTML = `
     <h3>Check-ins while you read</h3>
-    <p class="lead">A short pause now and then helps you notice if you have drifted. How you answer changes how often the next one comes, and whether the Debug tab steps in.</p>
-    ${supportNote}
+    <p class="lead">A short pause now and then helps you notice if you have drifted.</p>
     <div class="switch">
       <div><b>Remind me</b><div class="small" id="cd"></div></div>
       <button type="button" id="cinToggle" role="switch" aria-checked="${c.on}" aria-label="Turn check-ins on or off"></button>
@@ -805,7 +812,7 @@ function renderStats() {
     <p class="small" style="margin-top:10px">Expected to understand it: <b>${g.confidence ?? 'N/A'}/5</b> &middot; Actually did: <b>${g.finalConfidence}/5</b></p>`;
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
-    <p class="lead">${g ? 'Goal: ' + esc(g.text) : 'No goal set yet.'}</p>
+    <p class="lead">${state.goal ? 'Goal: ' + esc(state.goal.text) : 'No goal set yet.'}</p>
     <p class="small">Support level: <b>${SUPPORT_LABEL[state.support.level]}</b></p>
     <div class="stats">
       <div class="stat"><b>${t.length}</b><span>Spots debugged</span></div>
@@ -852,13 +859,12 @@ function resetSession() {
   $$('mark.dbg', reader).forEach(m => { const p = m.parentNode; while (m.firstChild) p.insertBefore(m.firstChild, m); p.removeChild(m); p.normalize(); });
   Object.assign(state, {
     goal: null, threads: [], pending: null, selectionNote: '',
-    session: { id: null },   // fresh reading = fresh DB session
+    session: { id: null },   // a new reading means a new database session
     startedAt: Date.now(), log: []
   });
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
   Object.assign(state.support, { score: 0, level: 'steady' });
   $('#goalLine').textContent = 'No goal set yet';
-  updateSupportBanner();
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
 }
@@ -880,7 +886,8 @@ function paragraphsToHtml(raw) {
   return raw.split(/\n\s*\n/).map(p => `<p>${esc(p.replace(/\s*\n\s*/g, ' ').trim())}</p>`).join('');
 }
 
-/* ---- Paste/upload dialog, shared by Readings and Quizzes -- pasteTarget tracks which one opened it ---- */
+/* ---------- Use your own text: one dialog, shared by the Readings and
+   Quizzes pickers. pasteTarget says which one is currently open. ---------- */
 let pasteTarget = 'reader';
 function openPasteDialog(target) { pasteTarget = target; $('#pasteFileMsg').textContent = ''; $('#pasteDlg').showModal(); }
 $('#pasteBtn').addEventListener('click', () => openPasteDialog('reader'));
@@ -914,8 +921,11 @@ $('#pasteOk').addEventListener('click', () => {
   }
 });
 
-/* Sidebar nav: each button's data-view matches a <section id="<name>View">,
-   so a new section just needs a new button. */
+/* =====================================================================
+   Sidebar navigation: Readings <-> Quizzes <-> Settings
+   Each nav button's data-view matches a <section id="<name>View">, so
+   adding another section later just means adding another button.
+   ===================================================================== */
 function showView(name) {
   $$('.side-link').forEach(b => {
     const active = b.dataset.view === name;
@@ -950,7 +960,9 @@ async function renderClassesView() {
     return;
   }
 
-  // classes and profiles aren't linked in the schema, so teacher names need a separate lookup
+  // Look up each class's teacher name separately -- classes and profiles
+  // aren't directly linked as far as the database schema goes, so this
+  // can't be fetched in the same query.
   const teacherIds = [...new Set((memberships || []).map(m => m.classes && m.classes.teacher_id).filter(Boolean))];
   let teacherNames = {};
   if (teacherIds.length) {
@@ -1080,27 +1092,10 @@ function handleLogin(profile) {
   showReadingPicker();
 }
 
-/* READINGS: library grid -> reader + side panel.
-   QUIZZES reuses this same data but renders as a flat list instead of a
-   card grid (pass opts.kind = 'quiz') -- so the two pickers read as
-   different kinds of screens, not the same page with a different title. */
+/* =====================================================================
+   READINGS: library grid -> reader + side panel
+   ===================================================================== */
 function readingCardsHtml(readings, iconSvg, opts = {}) {
-  if (opts.kind === 'quiz') {
-    return `<div class="quiz-list">${readings.map(r => {
-      const words = r.body.trim().split(/\s+/).length;
-      const qCount = Math.max(3, Math.min(6, Math.round(words / 180)));
-      const cls = opts.demo ? 'quiz-row demo' : 'quiz-row';
-      const attr = opts.demo ? `data-demo="${r.id}"` : `data-id="${r.id}"`;
-      return `<button class="${cls}" ${attr}>
-        <span class="quiz-row-icon">${iconSvg}</span>
-        <span class="quiz-row-body">
-          <span class="quiz-row-title">${esc(r.title)}${opts.demo ? '<span class="quiz-row-badge">Built-in</span>' : ''}</span>
-          <span class="quiz-row-meta">About ${qCount} questions</span>
-        </span>
-        <span class="quiz-row-cta">Start quiz &rarr;</span>
-      </button>`;
-    }).join('')}</div>`;
-  }
   return `<div class="lib-grid">${readings.map(r => {
     const words = r.body.trim().split(/\s+/).length;
     const mins = Math.max(1, Math.round(words / 150));
@@ -1116,7 +1111,9 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
     </button>`;
   }).join('')}</div>`;
 }
-/* Demo readings are shaped like {id, title, body} too, so the same card markup renders both. */
+/* Built-in demo readings reuse the same card markup -- they're shaped
+   the same as a database reading ({id, title, body}) so one function
+   can render both. */
 function demoReadingObjs() { return DEMO_READINGS.map(d => ({ id: d.id, title: d.title, body: d.text })); }
 const BOOK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>`;
 
@@ -1162,13 +1159,13 @@ async function showReadingPicker() {
       <button class="btn alt" id="pickPaste" type="button">Paste or upload my own text</button>
     </div>`;
 
-  $$('button[data-id]', picker).forEach(b => b.addEventListener('click', async () => {
+  $$('.lib-card[data-id]', picker).forEach(b => b.addEventListener('click', async () => {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { picker.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
     enterReader({ title: r.title, byline: 'Added by your teacher', bodyHtml: paragraphsToHtml(r.body), readingId: r.id });
   }));
-  $$('button[data-demo]', picker).forEach(b => b.addEventListener('click', () => {
+  $$('.lib-card[data-demo]', picker).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
     enterReader({ title: d.title, byline: 'Built-in practice text', bodyHtml: paragraphsToHtml(d.text), readingId: null });
@@ -1191,8 +1188,11 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   showGoalPopup();
 }
 
-/* QUIZZES: a separate top-level view. Fetches the reading's text directly,
-   so a quiz works without opening that reading in Readings first. */
+/* =====================================================================
+   QUIZZES: its own top-level view, decoupled from the reading workspace.
+   Picking a reading here fetches its text directly from the database,
+   so a quiz can be taken without ever opening that reading in Readings.
+   ===================================================================== */
 let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
 
 async function ensureQuizSession() {
@@ -1225,7 +1225,7 @@ async function renderQuizPicker() {
   const { data: readings, error } = await getVisibleReadings();
 
   const teacherGrid = (!error && readings && readings.length)
-    ? readingCardsHtml(readings, QUIZ_ICON, { kind: 'quiz' })
+    ? readingCardsHtml(readings, QUIZ_ICON)
     : `<p class="small">${error ? 'Could not load readings right now.'
         : 'No readings from your classes yet. <a href="#" id="goToClassesQuiz">Join a class</a> to see what your teacher adds.'}</p>`;
 
@@ -1237,17 +1237,17 @@ async function renderQuizPicker() {
     <h3 style="margin:28px 0 0">From your classes</h3>
     ${teacherGrid}
     <div class="row" style="margin-top:16px">
-      <button class="btn alt" id="quizPaste" type="button">Paste or upload a text to quiz</button>
+      <button class="btn alt" id="quizPaste" type="button">Paste or upload my own text</button>
     </div>`;
 
-  $$('button[data-id]', el).forEach(b => b.addEventListener('click', async () => {
+  $$('.lib-card[data-id]', el).forEach(b => b.addEventListener('click', async () => {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
     quizCtx = { readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
     renderQuizWorkspace();
   }));
-  $$('button[data-demo]', el).forEach(b => b.addEventListener('click', () => {
+  $$('.lib-card[data-demo]', el).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
     quizCtx = { readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null };
@@ -1261,7 +1261,7 @@ async function renderQuizPicker() {
 async function loadQuizQuestions() {
   quizCtx.status = 'loading'; quizCtx.error = ''; quizCtx.answers = {};
   renderQuizWorkspace();
-  const d = await callBackend('/quiz', { text: quizCtx.text, goal: null, n: 4 });
+  const d = await callBackend('/quiz', { text: quizCtx.text, goal: null, n: 5 });
   if (d && Array.isArray(d.questions) && d.questions.length) {
     quizCtx.questions = d.questions; quizCtx.source = 'ai'; quizCtx.status = 'ready';
   } else if (quizCtx.demoId === 'demo-lamp') {
