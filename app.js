@@ -1198,8 +1198,12 @@ let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, t
 async function ensureQuizSession() {
   if (quizCtx.sessionId) return quizCtx.sessionId;
   if (!state.user) return null;
+  // kind: 'quiz' keeps this out of the reading-session counts. A quiz
+  // attempt has no goal, no flagged passages and no check-ins, so counting
+  // it as a reading session inflates every per-session figure the teacher
+  // dashboard and the evaluation rely on. Needs session_kind_migration.sql.
   const { data, error } = await supa.from('sessions').insert({
-    student_id: state.user.id, reading_id: quizCtx.readingId
+    student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz'
   }).select('id').single();
   if (error) { console.warn('Could not start a quiz session in the database:', error.message); return null; }
   quizCtx.sessionId = data.id;
