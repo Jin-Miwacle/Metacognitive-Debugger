@@ -705,7 +705,7 @@ reader.addEventListener('click', e => {
 
 /* ---- Check-in tab + floating popup ---- */
 function startCheckins() {
-  const c = state.checkin; c.on = true; c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
+  const c = state.checkin; c.on = true; c.nextAt = Date.now() + c.everySec * 1000;
 }
 async function fireCheckin() {
   const c = state.checkin;
@@ -791,7 +791,6 @@ function wireCheckinCard(box, onAfter) {
     c.responses.push({ level, prompt: c.pending, answer: answerText });
     logEvent('checkin_response', { level, prompt: c.pending, answer: answerText });
     dbInsertCheckin(c.pending, level, answerText);
-    nudgeSupport(level === 'clear' ? -1 : level === 'fuzzy' ? 1 : 2);
     c.pending = null;
     if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
     if (currentTab() === 'monitor') renderCheckin(); else updateBadges();
@@ -919,7 +918,6 @@ function resetSession() {
     startedAt: Date.now(), log: []
   });
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
-  Object.assign(state.support, { score: 0, level: 'steady' });
   $('#goalLine').textContent = 'No goal set yet';
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
