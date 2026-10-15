@@ -1,0 +1,19 @@
+# Vercel only needs the static website. Everything else stays out of the
+# deployment, so it is neither built (no Python detection from main.py /
+# requirements.txt) nor served publicly while the repo is private.
+
+# Backend and model code: runs on the group member's PC, not on Vercel
+Backend/
+main.py
+t5_quiz.py
+requirements.txt
+export_for_evaluation.py
+
+# Notebooks and notes
+*.ipynb
+Choosing a model
+README.md
+
+# Local tooling
+.vscode/
+.idea/
