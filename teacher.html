@@ -128,9 +128,17 @@
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<!-- pdf.js 3.x, not 4.x. Version 4 ships ES modules only, so a plain
+     <script src> tag gets a 404 and window.pdfjsLib is never defined. That
+     is why PDF upload failed while Word and PowerPoint kept working.
+     3.11.174 is the last release with a UMD build a normal script tag can
+     load. Keep this in step with index.html. -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('pdf.js')"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('mammoth (Word)')"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('JSZip (PowerPoint)')"></script>
 <script src="fileExtract.js"></script>
 <script src="auth.js"></script>
 <script src="settings.js"></script>
@@ -194,7 +202,7 @@ function makeJoinCode() {
 
 /* Labels matching the student-side wording in app.js, so a teacher sees
    the same words a student picked, not raw database values. */
-const DEBUG_PROBLEM_LABEL = { vocab: 'A word they didn’t know', lost: 'Lost the point', connect: 'Ideas didn’t connect', why: 'Why did this happen?', unspecified: 'Other' };
+const DEBUG_PROBLEM_LABEL = { vocab: 'A word they didn’t know', lost: 'Lost the point', connect: 'Ideas didn’t connect', why: 'Why did this happen?', other: 'Described it themselves', unspecified: 'Not recorded' };
 const CHECKIN_LEVEL_LABEL = { clear: 'I follow it', fuzzy: 'A bit fuzzy', lost: 'I’m lost', unspecified: 'Other' };
 
 /* A compact "where are they getting stuck" summary for one class --

@@ -10,9 +10,31 @@
    Only reads text already embedded in the file -- a scanned/photographed
    PDF has none to find, and this doesn't do OCR. */
 
+/* Must match the pdf.js version in index.html and teacher.html exactly.
+   A worker from a different version than the main script fails at parse
+   time with a version-mismatch error, which reads like a broken PDF
+   rather than a wrong URL, so these two are changed together or not at
+   all. */
+const PDFJS_VERSION = '3.11.174';
+
 if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js';
+    `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.worker.min.js`;
+}
+
+/* One message for all three libraries. The onerror handlers on the script
+   tags in index.html and teacher.html fill window.__libFail, so a blocked
+   or missing library is named here rather than surfacing much later as a
+   confusing failure at upload time. */
+function readerMissing(what) {
+  const failed = (window.__libFail || []).join(', ');
+  return new Error(
+    `The ${what} reader did not load, so that file type can't be read right now.` +
+    (failed ? ` Scripts that failed to load: ${failed}.` : '') +
+    ' This is usually being offline, or an ad blocker, strict tracking protection, ' +
+    'or a school network blocking cdn.jsdelivr.net. The other file types still ' +
+    'work, and pasting the text in directly always works.'
+  );
 }
 
 function fileKind(file) {
@@ -29,15 +51,15 @@ async function extractTextFromFile(file) {
   if (!kind) throw new Error("That file type isn't supported. Use a .pdf, .docx, .pptx, or .txt file.");
   if (kind === 'txt') return (await file.text()).trim();
   if (kind === 'pdf') {
-    if (!window.pdfjsLib) throw new Error('The PDF reader script did not load. This usually means the pdf.js script tag in the page is broken or blocked, not your connection -- check the browser console (F12) for a red error on cdn.jsdelivr.net.');
+    if (!window.pdfjsLib) throw readerMissing('PDF');
     return extractPdf(file);
   }
   if (kind === 'docx') {
-    if (!window.mammoth) throw new Error('The Word-file reader did not load. Check your internet connection and try again.');
+    if (!window.mammoth) throw readerMissing('Word');
     return extractDocx(file);
   }
   if (kind === 'pptx') {
-    if (!window.JSZip) throw new Error('The PowerPoint reader did not load. Check your internet connection and try again.');
+    if (!window.JSZip) throw readerMissing('PowerPoint');
     return extractPptx(file);
   }
 }
