@@ -149,13 +149,7 @@
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<!-- pdf.js 3.x, not 4.x. Version 4 ships ES modules only, so a plain
-     <script src> tag gets a 404 and window.pdfjsLib is never defined. That
-     is why PDF upload failed while Word and PowerPoint kept working.
-     3.11.174 is the last release with a UMD build a normal script tag can
-     load. If pdf.js is upgraded again, both pages have to load it with
-     type="module" and the workerSrc in fileExtract.js has to point at the
-     matching .mjs file. -->
+
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js"
         onerror="(window.__libFail=window.__libFail||[]).push('pdf.js')"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"

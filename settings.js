@@ -1,12 +1,3 @@
-/* SETTINGS.JS -- the "Account" page shared by index.html and teacher.html.
-   Fills whatever element you give it with: name, email, account type, a
-   change-password form, and a light/dark switch.
-
-   Also defines showToast(), a small popup used to confirm something just
-   happened (saved, failed) -- shared so any page can use it, not just
-   Settings.
-
-   Needs `supa` (from auth.js) and a logged-in `profile` ({ id, role, full_name }). */
 function escSettings(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -15,10 +6,6 @@ function roleLabel(role) {
   return role ? role.charAt(0).toUpperCase() + role.slice(1) : '';
 }
 
-/* ---- Toast popups ----
-   Slides in, sits a few seconds, fades out on its own. kind is 'ok'
-   (green) or 'bug' (red) -- for things the system just did, not
-   routine status text. */
 function showToast(message, kind = 'ok') {
   let host = document.getElementById('toastHost');
   if (!host) {

@@ -1,20 +1,3 @@
-/* FILEEXTRACT.JS -- pulls plain text out of an uploaded PDF, Word, or
-   PowerPoint file, right in the browser, no backend needed. Comes back
-   as plain text with blank lines between paragraphs, same shape as the
-   "paste your own text" box.
-
-   Needs pdf.js, mammoth.js, and JSZip loaded first (index.html /
-   teacher.html). If one didn't load, that file type just won't work --
-   the others still will.
-
-   Only reads text already embedded in the file -- a scanned/photographed
-   PDF has none to find, and this doesn't do OCR. */
-
-/* Must match the pdf.js version in index.html and teacher.html exactly.
-   A worker from a different version than the main script fails at parse
-   time with a version-mismatch error, which reads like a broken PDF
-   rather than a wrong URL, so these two are changed together or not at
-   all. */
 const PDFJS_VERSION = '3.11.174';
 
 if (window.pdfjsLib) {
@@ -22,10 +5,6 @@ if (window.pdfjsLib) {
     `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/legacy/build/pdf.worker.min.js`;
 }
 
-/* One message for all three libraries. The onerror handlers on the script
-   tags in index.html and teacher.html fill window.__libFail, so a blocked
-   or missing library is named here rather than surfacing much later as a
-   confusing failure at upload time. */
 function readerMissing(what) {
   const failed = (window.__libFail || []).join(', ');
   return new Error(

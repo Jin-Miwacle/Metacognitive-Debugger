@@ -1,32 +1,4 @@
-"""
-Pulls data out of Supabase (and the AI backend) into spreadsheets your
-group can score by hand -- the first step of the hint/quiz evaluation
-plan.
 
-Needs two new lines in backend/.env, alongside the Gemini/model ones
-already there:
-
-    SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
-    SUPABASE_SERVICE_KEY=your-secret-service-role-key
-
-Get SUPABASE_SERVICE_KEY from Supabase: Settings -> API -> "service_role".
-That's NOT the anon key already in config.js -- it's a separate, secret
-key that skips Row Level Security entirely, which is exactly why this
-script needs it (it has to read every student's data, not just one
-person's). Because of that: never put this key in config.js, never
-commit it, never share it. Keep it in backend/.env only, on your own
-computer, and only use it for scripts like this one.
-
-Usage (run from the backend/ folder):
-    python export_for_evaluation.py hints   -> hints_for_rating.xlsx
-    python export_for_evaluation.py quiz    -> quiz_for_rating.xlsx
-
-"hints" reads every saved debug thread straight from the database.
-"quiz" needs the AI backend running locally (python main.py, or however
-you normally start it) -- it asks /quiz for a fresh quiz on every
-reading currently in the database, since individual quiz questions
-aren't saved anywhere until a student actually answers one.
-"""
 import os
 import sys
 

@@ -587,11 +587,7 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
 
   // For each reading, count sessions and how many debug spots are open / resolved / still "stuck".
   const cards = await Promise.all(readings.map(async (r) => {
-    // Reading sessions only. A quiz attempt also creates a sessions row, so
-    // without this filter the count on this card disagrees with the tiles at
-    // the top of the class, which go through teacher_class_progress() and do
-    // filter. Needs session_kind_migration.sql; falls back to the old
-    // unfiltered count if that has not been run yet.
+
     let { data: sessions } = await supa.from('sessions')
       .select('id').eq('reading_id', r.id).eq('kind', 'reading');
     if (!sessions) {
@@ -606,19 +602,7 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
         if (e.status === 'stuck') stuck++; else if (e.status === 'resolved') resolved++; else open++;
       });
     }
-    // Quiz performance on this reading and nothing else. It goes through a
-    // function because a teacher cannot read other students' quiz_results
-    // directly, and the function scopes it twice: to this reading, and to
-    // quizzes this teacher made. That second part matters for the built-in
-    // readings, where several teachers can make a quiz from the same text and
-    // none of them should see another's class in this number.
-    //
-    // The class tiles stay as they are, counting every quiz in the class
-    // together. That is the general picture; this is the per-reading one.
-    //
-    // Needs reading_quiz_stats_migration.sql. Without it the card just leaves
-    // the figure out rather than showing a zero that would read as "nobody
-    // scored anything".
+
     let quizMeta = '';
     const { data: quizStats } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
     const qs = Array.isArray(quizStats) ? quizStats[0] : quizStats;
@@ -671,21 +655,7 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
   }));
 }
 
-
-/* ====================================================================
-   TEACHER-MADE QUIZZES
-
-   A teacher generates a quiz from one of their class readings, checks the
-   questions, edits or removes any that do not work, then assigns it. The
-   questions are saved, so every student in the class answers the same set
-   and the scores can be compared. Needs teacher_quizzes_migration.sql.
-   ==================================================================== */
-
-let currentClass = null;   // set by openClassDetail, used by the quiz builder
-
-/* The rest of this page only talks to Supabase. Generating a quiz needs the
-   AI backend, the same address the student page uses, which lives in
-   config.js so it is set in one place at deploy time. */
+let currentClass = null;   
 const QUIZ_CONFIG = Object.assign(
   { API_BASE: 'http://localhost:8000' },
   window.APP_CONFIG || {}
@@ -708,16 +678,6 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
   return d.questions;
 }
 
-/* How many questions a passage can carry. The same rule lives in app.js for
-   the student's own quizzes and in main.py as a backstop, so all three agree:
-   one question per 25 words, in steps of five, never fewer than 5 or more
-   than 20. A 150-word built-in reading therefore offers 5 and nothing else.
-
-   The ceiling is not arbitrary. The model writes the whole quiz as one piece
-   of JSON, so a long one is likelier to be cut off mid-string, and the parse
-   is all or nothing: a truncated answer loses the entire quiz rather than the
-   last question. Short passages also run out of material for believable wrong
-   options, which is the failure that looks like a working quiz. */
 const WORDS_PER_QUESTION = 25;
 const QUESTION_COUNTS = [5, 10, 15, 20];
 
@@ -734,9 +694,6 @@ async function openQuizSettings(reading) {
   const words = countWords(reading.body);
   const supported = questionsSupported(words);
 
-  // A reading opened from inside a class already has its class. One opened
-  // from the Dashboard, or a built-in reading, belongs to no class, so the
-  // dialog has to ask which class the quiz is being assigned to.
   let classOptions = '';
   if (!currentClass) {
     const { data: classes } = await supa.from('classes')
@@ -794,10 +751,7 @@ async function openQuizSettings(reading) {
   dlg.showModal();
   document.getElementById('qzCancel').addEventListener('click', () => dlg.close('cancel'));
 
-  // Listen on the form's submit rather than the Generate button's click.
-  // Cancel used to be the first submit button in the form, so pressing Enter
-  // in the title field submitted through it and quietly closed the dialog
-  // without ever generating anything.
+  
   dlg.querySelector('form').addEventListener('submit', (e) => {
     e.preventDefault();
     const picker = document.getElementById('qzClass');
@@ -838,22 +792,6 @@ function classQuizAverage(rows) {
   return scorePercent(correct, answered);
 }
 
-/* ====================================================================
-   BUILT-IN READINGS
-
-   Practice texts that belong to no teacher and no class. Every signed-in
-   account can read them; only an admin can add, edit or remove one, which
-   the policies in builtin_readings_migration.sql enforce in the database
-   rather than only in this page.
-   ==================================================================== */
-
-/* opts.canManage adds the Delete button, opts.canQuiz adds "Make a quiz".
-   They are separate because an admin manages the texts but has no class to
-   assign a quiz to, and a quiz always belongs to one class. */
-/* The "N quizzes from this text, X% average" tail on a reading card. Empty
-   when this account has made no quiz from that reading, so a teacher does not
-   see a 0% that is really "nobody has used it yet", and empty when the
-   migration behind it has not been run. */
 function builtInQuizMeta(qs) {
   if (!qs || !Number(qs.quizzes_made)) return '';
   const made = Number(qs.quizzes_made), answered = Number(qs.answered || 0);
@@ -880,11 +818,6 @@ async function loadBuiltInReadings(list, opts = {}) {
       canManage ? ' Add one below.' : ' An admin adds these.'}</p>`;
     return;
   }
-
-  // Same per-reading quiz figure as the teacher's own readings, scoped in SQL
-  // to this reading and to the quizzes this account made. Several teachers can
-  // quiz the same built-in text, so without that second scope one teacher
-  // would be reading another's class results here.
   const stats = await Promise.all(readings.map(async (r) => {
     const { data } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
     return Array.isArray(data) ? data[0] : data;
@@ -928,11 +861,6 @@ async function loadBuiltInReadings(list, opts = {}) {
     const card = btn.closest('.reading-card');
     const id = card.dataset.reading;
 
-    // sessions.reading_id and quizzes.reading_id are both "on delete set
-    // null", so deleting the text does not delete the work done on it. The
-    // rows stay and lose the link to the text instead, which means a reading
-    // session that can no longer be traced to any passage. Say so, with the
-    // real numbers, because that is the part that cannot be undone.
     const [{ count: sessionCount }, { count: quizCount }] = await Promise.all([
       supa.from('sessions').select('id', { count: 'exact', head: true }).eq('reading_id', id),
       supa.from('quizzes').select('id', { count: 'exact', head: true }).eq('reading_id', id)

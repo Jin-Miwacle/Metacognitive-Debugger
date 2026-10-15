@@ -1,18 +1,3 @@
-"""
-Reading Partner backend (Brain: unsloth/Llama-3.2-3B-Instruct-bnb-4bit).
-
-The widget (index.html) talks to three addresses on this server:
-    POST /partner   ->  { "reply": "..." }       a hint while the student is debugging
-    POST /quiz      ->  { "questions": [ ... ] } a quiz written from the student's text
-    POST /checkin   ->  { "prompt": "..." }      a short mid-reading check-in question
-
-Usage:
-    1. On terminal, enter: huggingface-cli login
-    2. Complete steps given and paste token
-    3. Run python main.py
-    4. Open index.html to test the website
-
-"""
 import json
 import os
 import sys
