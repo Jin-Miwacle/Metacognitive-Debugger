@@ -1,26 +1,28 @@
-/* CONFIG -- set API_BASE to your backend's URL, or leave it null to run
-   on the built-in offline demo. Three endpoints get called: POST /partner
-   (debug hints), POST /quiz (quiz questions), POST /checkin (check-in
-   prompts). If the backend's unreachable, the app quietly falls back to
-   offline demo answers -- which is exactly why this is easy to miss: it
-   never throws an error, it just quietly stops being the real AI.
+/* CONFIG -- these two settings now live in config.js, which is the one
+   small file that differs between running on your own machine and a
+   deployed site. Editing a 2-line file at deploy time is a lot harder to
+   get wrong than editing this one. The defaults below apply only if an
+   older config.js is still in place and does not define them.
 
-   If you're hosting this frontend on Vercel (or anywhere other than the
-   same machine as the Python backend), "http://localhost:8000" is wrong
-   for anyone except you, on your own computer, while the backend happens
-   to be running right there too. The model (SEA-LION/SeaLLM or T5) runs
-   locally on a groupmate's laptop, Vercel can't run that for you, it
-   only hosts this static frontend. So the backend still has to run on
-   that laptop, reachable through something like an ngrok tunnel
-   (`ngrok http 8000`, after the main.py fix that lets it accept outside
-   connections), and this needs to point at *that* tunnel's https URL,
-   not localhost. ngrok's free-tier URL changes every time it restarts,
-   so update this line and redeploy right before a demo rather than once
-   and forgetting about it. */
-const CONFIG = {
-  API_BASE: "http://localhost:8000",
-  CHECKIN_EVERY_SEC: 90
-};
+   API_BASE is the backend's address. Three endpoints get called: POST
+   /partner (debug hints), POST /quiz (quiz questions), POST /checkin
+   (check-in prompts).
+
+   Two ways this goes wrong quietly, both worth knowing, because neither
+   shows an error. callBackend() returns null on any failure and the app
+   falls back to built-in demo answers, so the app keeps working and
+   simply stops being the real AI:
+
+   1. Pointing at localhost from a deployed site. "http://localhost:8000"
+      means the visitor's own machine, so it only ever works for whoever
+      is running the backend on the same computer.
+   2. Mixed content. If the site is served over https and API_BASE is
+      plain http, the browser blocks every call before it is sent. The
+      backend needs its own https address, not an IP with a port. */
+const CONFIG = Object.assign(
+  { API_BASE: null, CHECKIN_EVERY_SEC: 90 },
+  window.APP_CONFIG || {}
+);
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -157,7 +159,8 @@ async function dbUpdateSession(fields) {
 async function dbInsertDebugEvent(t) {
   const sid = await ensureSession(); if (!sid) return;
   const { data, error } = await supa.from('debug_events')
-    .insert({ session_id: sid, passage: t.text, problem: t.problem, status: 'open' })
+    .insert({ session_id: sid, passage: t.text, problem: t.problem,
+              problem_text: t.problemText || null, status: 'open' })
     .select('id').single();
   if (error) { console.warn('Could not save the debug spot:', error.message); return; }
   t.dbId = data.id;
@@ -202,6 +205,10 @@ const PROBLEMS = {
   connect: { label: 'Ideas don’t connect', sub: 'How does this link to before?' },
   why:     { label: 'Why did this happen?',   sub: 'Something is implied, not stated' }
 };
+/* A student whose trouble is none of the four types above types it into
+   the box under them instead. That is sent as problem = "other" with the
+   wording in problem_text, so "other" is a real problem key even though it
+   is deliberately not a button here. */
 
 /* ---- Offline demo replies: backend-unavailable fallback ---- */
 const DEMO_REPLIES = {
@@ -220,6 +227,10 @@ const DEMO_REPLIES = {
   why: [
     'Split it in two. What does the text say directly, and what are you filling in yourself? Which earlier detail supports your guess?',
     'Ask: what would have to be true for this to make sense? Look back for a clue that points that way.'
+  ],
+  other: [
+    'Say the trouble in one sentence, as plainly as you can. Then reread just this part and watch for the exact word or idea it sits on.',
+    'Start from what you do follow here. Then name the first thing that stops making sense. That spot is usually the one worth working on.'
   ],
   followup: [
     'Compare your version with the original: did you keep who did what? If something is missing, add it. Then tell me below if it makes sense now.',
@@ -276,7 +287,8 @@ async function askPartner(payload) {
 
 function partnerPayload(mode, t, message) {
   return {
-    mode, problem: t.problem, passage: t.text, paragraph: t.paragraph,
+    mode, problem: t.problem, problem_text: t.problemText || null,
+    passage: t.text, paragraph: t.paragraph,
     goal: state.goal && state.goal.text, goal_hint: t.goalHint || null,
     support: state.support.level, message: message || null,
     // 'auto' means let the backend detect the passage's language itself;
@@ -430,6 +442,17 @@ function closestP(node) {
 /* ---- Debug tab ---- */
 function shorten(s, n = 90) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
+/* What the tag on an open thread says. For the four fixed types that's their
+   label. For a typed one it's the student's own wording, which tells them (and
+   the teacher reading it back later) far more than the word "Other" would.
+   The fallback matters: a thread restored from an older session may carry a
+   problem key this build no longer has, and a bare PROBLEMS[key].label throws
+   on that and takes the whole Debug tab down with it. */
+function threadProblemLabel(t) {
+  if (t.problem === 'other' && t.problemText) return shorten(t.problemText, 48);
+  return (PROBLEMS[t.problem] || PROBLEMS.lost).label;
+}
+
 function renderDebug() {
   const el = $('#p-debug');
   const p = state.pending;
@@ -443,6 +466,13 @@ function renderDebug() {
       <div class="chips">
         ${Object.entries(PROBLEMS).map(([k, v]) => `<button type="button" data-problem="${k}">${v.label}<small>${v.sub}</small></button>`).join('')}
       </div>
+      <form id="ownProblemForm" style="margin-top:12px">
+        <label class="f" for="ownProblem">Or say it in your own words</label>
+        <div class="row">
+          <input type="text" id="ownProblem" style="flex:1" placeholder="What is confusing about it?" autocomplete="off">
+          <button class="btn" type="submit">Start</button>
+        </div>
+      </form>
       <div class="row" style="margin-top:10px"><button class="btn alt" id="cancelSel" type="button">Cancel</button></div>
     </div>` : `
     <div class="card">
@@ -451,7 +481,7 @@ function renderDebug() {
     </div>`;
   const threads = state.threads.slice().reverse().map(t => `
     <div class="card ${t.status}" data-id="${t.id}">
-      <span class="tag ${t.status}">${t.status === 'resolved' ? 'Clear now' : t.status === 'stuck' ? 'Still stuck' : PROBLEMS[t.problem].label}</span>
+      <span class="tag ${t.status}">${t.status === 'resolved' ? 'Clear now' : t.status === 'stuck' ? 'Still stuck' : esc(threadProblemLabel(t))}</span>
       <blockquote class="quote">${esc(shorten(t.text, 140))}</blockquote>
       ${t.msgs.map(m => `<div class="msg ${m.from}${m.typing ? ' typing' : ''}">${esc(m.text)}${m.demo ? '<div class="small" style="margin-top:4px">Offline demo reply (backend not reached)</div>' : ''}</div>`).join('')}
       ${t.status !== 'resolved' && !t.busy ? `
@@ -463,6 +493,11 @@ function renderDebug() {
           <button class="btn alt" type="button" data-act="resolve" data-id="${t.id}">Makes sense now</button>
           ${t.gaveUp ? '' : `<button class="btn alt" type="button" data-act="stuck" data-id="${t.id}">Still stuck</button>`}
         </div>` : ''}
+      ${t.status === 'resolved' && t.autoResolved ? `
+        <div class="row" style="margin-top:8px; align-items:center">
+          <span class="small">Marked as cleared up, since your answer showed you had it.</span>
+          <button class="btn alt" type="button" data-act="reopen" data-id="${t.id}">Still confused</button>
+        </div>` : ''}
     </div>`).join('');
   el.innerHTML = chooser + threads;
 
@@ -470,6 +505,14 @@ function renderDebug() {
   const c = $('#cancelSel', el); if (c) c.addEventListener('click', () => { state.pending = null; getSelection().removeAllRanges(); renderDebug(); });
 }
 $('#p-debug').addEventListener('submit', e => {
+  const own = e.target.closest('#ownProblemForm');
+  if (own) {
+    e.preventDefault();
+    const v = own.querySelector('input').value.trim();
+    if (!v) return;
+    startDebug('other', v);
+    return;
+  }
   const f = e.target.closest('form.reply'); if (!f) return;
   e.preventDefault();
   const v = f.querySelector('input').value.trim(); if (!v) return;
@@ -480,22 +523,30 @@ $('#p-debug').addEventListener('click', e => {
   const id = +b.dataset.id;
   if (b.dataset.act === 'resolve') setStatus(id, 'resolved');
   if (b.dataset.act === 'stuck') markStuck(id);
+  // Undoing an automatic close. The thread goes back to open and the reply
+  // box comes back, and the reopen is logged, so a coach that closes threads
+  // too eagerly shows up in the data instead of hiding as a clean resolve.
+  if (b.dataset.act === 'reopen') {
+    const t = state.threads.find(x => x.id === id);
+    if (t) { t.autoResolved = false; setStatus(id, 'open'); }
+  }
 });
 
 let threadSeq = 0;
-function startDebug(problem) {
+function startDebug(problem, problemText) {
   const p = state.pending; if (!p) return;
   const id = ++threadSeq;
   const mark = wrapRange(p.range, id);
   getSelection().removeAllRanges();
   const t = {
-    id, problem, text: p.text, paragraph: p.paragraph, status: 'open', busy: true,
+    id, problem, problemText: problemText || null,
+    text: p.text, paragraph: p.paragraph, status: 'open', busy: true,
     attempts: 0, gaveUp: false, goalHint: goalOverlapWord(p.text),
     msgs: [{ from: 'ai', text: 'Thinking…', typing: true }], mark
   };
   state.threads.push(t);
   state.pending = null;
-  logEvent('debug_start', { id, problem, passage: p.text });
+  logEvent('debug_start', { id, problem, problem_text: problemText || null, passage: p.text });
   dbInsertDebugEvent(t);
   renderDebug();
   askPartner(partnerPayload('debug', t))
@@ -521,15 +572,38 @@ async function sendFollowup(id, message) {
   const r = await askPartner(payload);
   t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   if (mode === 'giveup') t.gaveUp = true;
-  renderDebug();
+  // The backend reports mode "success" when the student's reply shows they
+  // have understood this spot. Closing the thread on that is the whole point
+  // of the signal: otherwise a spot the student clearly got stays "open"
+  // until they remember to press a button, and an open spot looks the same
+  // as an abandoned one in the teacher dashboard and in the 3.6.1 counts.
+  // A backend that does not send a mode leaves r.mode undefined, so this is
+  // simply inert there and the buttons still work as before.
+  if (r.mode === 'success' && t.status === 'open' && !r.demo) {
+    t.autoResolved = true;
+    setStatus(id, 'resolved', 'auto');   // re-renders
+  } else {
+    renderDebug();
+  }
   dbSaveTranscript(t);
 }
-function setStatus(id, status) {
+/* `how` records who decided: "student" when they pressed a button, "auto"
+   when the backend classified their reply as understanding it. Both end up
+   as status "resolved", and the resolved counts are evaluation data, so the
+   log has to keep them apart. A thread can also come back to "open", which
+   the old version could not express: anything that was not "resolved" was
+   logged as stuck and pushed the support level up. */
+function setStatus(id, status, how = 'student') {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.status = status;
-  if (t.mark) { t.mark.classList.remove('stuck'); t.mark.classList.toggle('resolved', status === 'resolved'); }
-  logEvent(status === 'resolved' ? 'debug_resolved' : 'debug_stuck', { id });
-  nudgeSupport(status === 'resolved' ? -1 : 2);
+  if (t.mark) {
+    t.mark.classList.toggle('stuck', status === 'stuck');
+    t.mark.classList.toggle('resolved', status === 'resolved');
+  }
+  const EVENTS = { resolved: 'debug_resolved', stuck: 'debug_stuck', open: 'debug_reopened' };
+  logEvent(EVENTS[status] || 'debug_status', { id, how });
+  if (status === 'resolved') nudgeSupport(-1);
+  else if (status === 'stuck') nudgeSupport(2);
   dbUpdateDebugStatus(t);
   renderDebug();
 }
