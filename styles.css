@@ -1,16 +1,21 @@
 :root {
-    /* Warm "notebook paper" neutrals instead of cool SaaS gray */
-    --page: #f5f0e6;
-    --sheet: #fffdf9;
-    --ink: #2a2a24;
-    --muted: #6e6656;
-    --line: #e2d7bf;
+    /* Paper neutrals in the same family as the chalkboard-green accent,
+       rather than the orange-cream (#f5f0e6) this started on. Keeps the
+       warm notebook feeling but puts the page and the accent in one hue
+       family instead of two, and --sheet now sits a clear step lighter
+       than --page so a card reads as a card without needing a line drawn
+       around it. */
+    --page: #eaece0;
+    --sheet: #f9faf3;
+    --ink: #262a20;
+    --muted: #6a6d5c;
+    --line: #d5d9c6;
 
-    --w-bg: #fffdf9;
-    --w-panel: #f4eedd;
-    --w-line: #e6dcc3;
-    --w-ink: #2a2a24;
-    --w-muted: #746b58;
+    --w-bg: #f9faf3;
+    --w-panel: #eef0e4;
+    --w-line: #dadec9;
+    --w-ink: #262a20;
+    --w-muted: #6f7360;
 
     /* Chalkboard-green accent reads "classroom" rather than "app" */
     --accent: #1f6f5c;
@@ -20,8 +25,15 @@
     --ok: #2f7d4f;
     --warn: #b9770e;
 
-    --serif: "Newsreader", Georgia, "Times New Roman", serif;
-    --sans: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* Fraunces for headings -- a warm, characterful serif with real
+       optical-size detail at display sizes, instead of a neutral display
+       face. Atkinson Hyperlegible for everything else -- it's designed by
+       the Braille Institute specifically to stay legible at small sizes
+       and for readers who struggle with similar-looking letterforms,
+       which fits a reading-comprehension tool for Grade 7 students better
+       than a generic UI sans would. */
+    --serif: "Fraunces", Georgia, "Times New Roman", serif;
+    --sans: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
   :root:not([data-theme="light"]) {
     color-scheme: light dark;
@@ -50,19 +62,28 @@
      same as the global rules above. Checking body[data-theme=...] directly
      looked right but never matched anything, which let the sidebar/page
      drift out of sync with the rest of the theme. ---- */
+  /* --w-* are used by every form field, card, and panel (textarea, input,
+     select, .card, .tag, .chips...), not just the student side-panel -- the
+     teacher page used these forms too but never overrode these tokens, so
+     every input/textarea here stayed the warm cream student color against
+     this page's cooler blue-gray background. --w-ink/--w-muted don't need
+     a teacher-specific value (plain dark/light text reads fine either way). */
   body[data-app="teacher"] {
     --page: #f1f4f9; --sheet: #ffffff; --line: #dde3ee;
     --accent: #35527a; --accent-ink: #ffffff; --accent-soft: #e3eaf5;
+    --w-bg: #ffffff; --w-panel: #f1f4f9; --w-line: #dde3ee;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) body[data-app="teacher"] {
       --page: #141a24; --sheet: #1b2330; --line: #2b3545;
       --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
+      --w-bg: #1b2330; --w-panel: #141a24; --w-line: #2b3545; --w-ink: #f2f5fa; --w-muted: #a6b1c4;
     }
   }
   :root[data-theme="dark"] body[data-app="teacher"] {
     --page: #141a24; --sheet: #1b2330; --line: #2b3545;
     --accent: #8fb0dd; --accent-ink: #141a24; --accent-soft: #263349;
+    --w-bg: #1b2330; --w-panel: #141a24; --w-line: #2b3545; --w-ink: #f2f5fa; --w-muted: #a6b1c4;
   }
 
   * { box-sizing: border-box; }
@@ -77,8 +98,21 @@
   button { font: inherit; color: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+  /* The hidden attribute only hides an element via the browser's own
+     stylesheet, which any of our own rules that set display on the same
+     element (like .side-link below) silently override -- that's exactly
+     how #adminNavBtn stayed hidden="" in the markup but visible on screen
+     to every teacher, not just admins. One !important rule here is safer
+     than hunting down every element that might get a hidden attribute. */
+  [hidden] { display: none !important; }
+
+  /* Radius carries meaning here: 9px on anything you press (buttons,
+     inputs), 12px on panels and cards, and a full pill ONLY on things
+     that genuinely are pill-shaped -- status tags, toggle tracks and
+     progress bars. Previously 999px was on all of those at once, which
+     left the shape saying nothing about what an element was. */
   .ghost {
-    background: transparent; border: 1px solid var(--line); border-radius: 999px;
+    background: transparent; border: 1px solid var(--line); border-radius: 9px;
     padding: 6px 14px; font-size: 13px; color: var(--ink);
   }
   .ghost:hover { border-color: var(--accent); }
@@ -115,7 +149,7 @@
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; font-size: 15px; font-weight: 700;
   }
-  .brand-mark-fallback { line-height: 1; }
+  .brand-mark-fallback { line-height: 1; display: none; align-items: center; justify-content: center; width: 100%; height: 100%; }
   .brand-mark img {
     position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block;
   }
@@ -256,8 +290,27 @@
     border: 1px solid var(--w-line); border-radius: 10px; padding: 9px 11px;
   }
   textarea { resize: vertical; min-height: 68px; }
-  label.f { display: block; font-weight: 600; margin: 12px 0 6px; }
+  label.f { display: block; font-weight: 500; margin: 12px 0 6px; }
   label.f .small { font-weight: 400; }
+
+  /* Browser default h3 is bold (~700), which reads very heavy in
+     Atkinson Hyperlegible -- bring it down a step everywhere. */
+  h3 { font-weight: 600; }
+
+  /* File inputs render as a bare OS control by default, which looks
+     broken sitting next to the rest of the styled form -- restyle the
+     wrapper and the pick-file button to match. */
+  input[type="file"] {
+    width: 100%; font: inherit; color: var(--w-muted); background: var(--w-panel);
+    border: 1px solid var(--w-line); border-radius: 10px; padding: 7px 11px;
+  }
+  input[type="file"]::file-selector-button,
+  input[type="file"]::-webkit-file-upload-button {
+    font: inherit; font-weight: 600; color: var(--accent-ink); background: var(--accent);
+    border: 0; border-radius: 7px; padding: 7px 12px; margin-right: 12px; cursor: pointer;
+  }
+  input[type="file"]::file-selector-button:hover,
+  input[type="file"]::-webkit-file-upload-button:hover { filter: brightness(1.08); }
 
   /* Disabled / read-only fields get their own look so they don't get
      mistaken for something you can type into. */
@@ -296,8 +349,13 @@
   .scale button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .scale-cap { display: flex; justify-content: space-between; font-size: 12px; color: var(--w-muted); margin-top: 4px; }
 
+  /* The debug thread keeps a container, because it IS a discrete thing
+     you act on, but it drops the outline. The panel tone already lifts it
+     off the background, and the colored rule down its quote is the thing
+     that should be carrying the signal. Tone plus one rule, not tone plus
+     a rule plus a border. */
   .card {
-    background: var(--w-panel); border: 1px solid var(--w-line); border-radius: 12px; padding: 12px; margin-bottom: 12px;
+    background: var(--w-panel); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px;
   }
   .card .quote {
     margin: 0 0 8px; padding: 0 0 0 10px; border-left: 3px solid var(--bug);
@@ -317,14 +375,16 @@
   .chips button:hover { border-color: var(--accent); }
 
   .msg { padding: 8px 10px; border-radius: 10px; margin: 6px 0; max-width: 92%; white-space: pre-wrap; }
-  .msg.ai { background: var(--w-bg); border: 1px solid var(--w-line); }
+  .msg.ai { background: var(--w-bg); }
   .msg.you { background: var(--accent-soft); margin-left: auto; }
   .msg.typing { color: var(--w-muted); font-style: italic; }
   .reply { display: flex; gap: 6px; margin-top: 8px; }
   .reply input { flex: 1; }
   .small { font-size: 12px; color: var(--w-muted); }
 
-  .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; background: var(--w-panel); border: 1px solid var(--w-line); border-radius: 12px; margin-bottom: 12px; }
+  /* A settings row, not a card. Separated by a rule the way a settings
+     list is, instead of being boxed like the content around it. */
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0 12px; border-bottom: 1px solid var(--w-line); margin-bottom: 14px; }
   .switch button {
     width: 44px; height: 26px; border-radius: 999px; border: 0; background: var(--w-line); position: relative; flex: none;
   }
@@ -343,8 +403,14 @@
   .opt.wrong { border-color: var(--bug); background: color-mix(in srgb, var(--bug) 12%, var(--w-bg)); }
   .explain { margin-top: 8px; font-size: 13px; color: var(--w-muted); }
 
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-  .stat { background: var(--w-panel); border: 1px solid var(--w-line); border-radius: 12px; padding: 10px 12px; }
+  /* Readouts, not objects. These used to be outlined rounded tiles, the
+     same shape as the thread cards and the settings rows below them, so
+     the panel read as a stack of identical boxes with no hierarchy. A
+     number and its label need no container at all; one hairline between
+     the pair is enough to group them. */
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-bottom: 14px; }
+  .stat { padding: 2px 0; }
+  .stat + .stat { border-left: 1px solid var(--w-line); padding-left: 16px; }
   .stat b { display: block; font-size: 22px; font-weight: 700; }
   .stat span { font-size: 12px; color: var(--w-muted); }
 
@@ -395,13 +461,13 @@
 .auth-wrap[hidden] { display: none; }
 .auth-card {
   width: 100%; max-width: 380px; background: var(--sheet); border: 1px solid var(--line);
-  border-radius: 18px; padding: 32px 28px; box-shadow: 0 12px 32px rgba(20,24,40,.08);
+  border-radius: 12px; padding: 32px 28px;
 }
 .auth-card h1 { font-family: var(--serif); font-size: 26px; margin: 0 0 2px; letter-spacing: -0.01em; }
 .auth-card .auth-sub { color: var(--muted); font-size: 14px; margin: 0 0 20px; }
 .auth-tabs { display: flex; gap: 4px; background: var(--page); border-radius: 10px; padding: 4px; margin-bottom: 20px; }
-.auth-tab { flex: 1; border: 0; background: transparent; padding: 9px 0; border-radius: 8px; font-weight: 600; color: var(--muted); font-size: 14px; }
-.auth-tab[aria-selected="true"] { background: var(--sheet); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.auth-tab { flex: 1; border: 1px solid transparent; background: transparent; padding: 9px 0; border-radius: 8px; font-weight: 600; color: var(--muted); font-size: 14px; }
+.auth-tab[aria-selected="true"] { background: var(--sheet); color: var(--accent); border: 1px solid var(--line); }
 .auth-card label.f { color: var(--ink); font-size: 13px; margin: 14px 0 6px; }
 .auth-card label.f:first-of-type { margin-top: 0; }
 .auth-card input {
@@ -420,7 +486,7 @@
 /* ---- Simple row card (classes list, admin lists) ---- */
 .reading-row-card {
   display: flex; align-items: center; gap: 12px;
-  background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px;
+  background: var(--sheet); border: 1px solid transparent; border-radius: 12px; padding: 12px 16px;
 }
 .reading-row-card b { font-family: var(--serif); font-size: 15px; }
 /* Fixed-width label column so every row's control (select / button)
@@ -435,15 +501,25 @@
   display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px;
   margin-top: 18px;
 }
+/* No outline at rest. --sheet already sits a step above --page, so the
+   card edge is visible without drawing a line around it, and the border
+   is kept transparent so it can appear on hover without the layout
+   shifting. An outline that is always on says nothing; one that arrives
+   when you point at something says "this is what you are about to pick". */
 .lib-card {
-  text-align: left; background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
+  text-align: left; background: var(--sheet); border: 1px solid transparent; border-radius: 14px;
   padding: 16px; display: flex; flex-direction: column; gap: 8px; min-height: 150px;
   transition: border-color .15s, transform .15s;
 }
 .lib-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .lib-card:disabled { opacity: .55; transform: none; }
+/* Sentence case, not tracked-out caps. There were four separate
+   ALL-CAPS letter-spaced pills across these screens, which is a lot of
+   shouting for labels nobody needs to read twice. Only the role badge in
+   the sidebar keeps that treatment now, because it marks who you are
+   signed in as and is meant to catch the eye once. */
 .lib-card-badge {
-  align-self: flex-start; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  align-self: flex-start; font-size: 11.5px; font-weight: 700;
   color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; margin-bottom: -2px;
 }
 .lib-card-icon {
@@ -475,7 +551,7 @@
 .quiz-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: break-word; }
 .quiz-row-title { font-weight: 600; font-size: 15px; color: var(--ink); }
 .quiz-row-badge {
-  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  display: inline-block; font-size: 11.5px; font-weight: 700;
   color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, var(--sheet)); border-radius: 999px;
   padding: 1px 7px; margin-left: 8px; vertical-align: middle;
 }
@@ -502,7 +578,7 @@
   background: var(--sheet); color: var(--ink); border: 1px solid var(--line);
   border-left: 4px solid var(--accent); border-radius: 10px;
   padding: 12px 16px; font-size: 13.5px; font-weight: 600; line-height: 1.35;
-  box-shadow: 0 10px 28px rgba(20, 24, 40, .18);
+  box-shadow: 0 3px 10px rgba(30, 36, 24, .16);
   max-width: 320px;
   animation: toast-in .18s ease-out;
 }
@@ -538,3 +614,36 @@
 @media (max-width: 480px) {
   .insight-bar-label { flex-basis: 110px; }
 }
+
+/* ---- Floating check-in popup: sits in a corner so reading isn't
+   interrupted -- answer it right there, or dismiss it and it's still
+   waiting in the Check-in tab. ---- */
+#checkinPopupHost {
+  position: fixed; right: 18px; bottom: 18px; z-index: 1900;
+  width: min(340px, calc(100vw - 36px));
+}
+.checkin-popup {
+  position: relative;
+  background: var(--w-bg); color: var(--w-ink);
+  border: 1px solid var(--w-line); border-radius: 12px;
+  padding: 16px 16px 14px;
+  box-shadow: 0 4px 14px rgba(30, 36, 24, .18);
+  animation: toast-in .18s ease-out;
+}
+.checkin-popup-close {
+  position: absolute; top: 10px; right: 10px;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: transparent; border: 1px solid var(--w-line);
+  color: var(--w-muted); font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.checkin-popup-close:hover { border-color: var(--accent); color: var(--accent); }
+.checkin-popup b { display: block; padding-right: 26px; font-size: 14.5px; }
+@media (max-width: 640px) {
+  #checkinPopupHost { left: 16px; right: 16px; bottom: 16px; width: auto; }
+}
+
+/* ---- Login: "forget remembered emails" link (the remembered emails
+   themselves show via the browser's native datalist dropdown) ---- */
+#forgetEmailsRow a { color: var(--muted); }
+#forgetEmailsRow a:hover { color: var(--accent); }

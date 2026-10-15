@@ -1,15 +1,22 @@
-/* =====================================================================
-   CONFIG
-   API_BASE is the address of your backend, e.g. "http://localhost:8000".
-   Leave it as null to use the built-in offline demo.
+/* CONFIG -- set API_BASE to your backend's URL, or leave it null to run
+   on the built-in offline demo. Three endpoints get called: POST /partner
+   (debug hints), POST /quiz (quiz questions), POST /checkin (check-in
+   prompts). If the backend's unreachable, the app quietly falls back to
+   offline demo answers -- which is exactly why this is easy to miss: it
+   never throws an error, it just quietly stops being the real AI.
 
-   The widget calls three addresses on the backend:
-     POST /partner  -> { reply }      hints while the student is debugging
-     POST /quiz     -> { questions }  a quiz written from a text
-     POST /checkin  -> { prompt }     a short check-in question
-   If the backend can't be reached, the app quietly falls back to the
-   offline demo versions and labels them as demo.
-   ===================================================================== */
+   If you're hosting this frontend on Vercel (or anywhere other than the
+   same machine as the Python backend), "http://localhost:8000" is wrong
+   for anyone except you, on your own computer, while the backend happens
+   to be running right there too. The model (SEA-LION/SeaLLM or T5) runs
+   locally on a groupmate's laptop, Vercel can't run that for you, it
+   only hosts this static frontend. So the backend still has to run on
+   that laptop, reachable through something like an ngrok tunnel
+   (`ngrok http 8000`, after the main.py fix that lets it accept outside
+   connections), and this needs to point at *that* tunnel's https URL,
+   not localhost. ngrok's free-tier URL changes every time it restarts,
+   so update this line and redeploy right before a demo rather than once
+   and forgetting about it. */
 const CONFIG = {
   API_BASE: "http://localhost:8000",
   CHECKIN_EVERY_SEC: 90
@@ -72,7 +79,16 @@ const state = {
   threads: [],           // debug sessions
   pending: null,         // current text selection { text, paragraph, range }
   selectionNote: '',
-  checkin: { on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [] },
+  checkin: {
+    on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [],
+    // Whether a check-in shows as a floating popup the moment it's ready, instead of
+    // only a quiet dot on the Monitor tab -- the popup used to be very easy to miss.
+    popupOn: (() => { try { return localStorage.getItem('checkinPopupOn') !== 'off'; } catch (e) { return true; } })()
+  },
+  support: { score: 0, level: 'steady' },  // see nudgeSupport() below
+  responseLanguage: (() => {              // 'auto' | 'en' | 'fil' -- which language the coach replies in
+    try { return localStorage.getItem('responseLanguage') || 'auto'; } catch (e) { return 'auto'; }
+  })(),
   startedAt: Date.now(),
   log: [],
   user: null,                  // { id, role, full_name } once logged in
@@ -83,13 +99,54 @@ function logEvent(type, data = {}) {
   state.log.push({ t: new Date().toISOString(), type, ...data });
 }
 
-/* ---------- Saving real progress to the database ----------
-   A "session" is one student's attempt at one reading. It's created the
-   first time it's actually needed (setting a goal, debugging a spot,
-   answering a check-in) rather than the moment the reading opens, so
-   browsing a reading and leaving doesn't clutter the teacher's data.
-   If a save fails (offline, not logged in, etc.) we only warn in the
-   console; the student's session keeps working locally. */
+/* ---- Support level: makes goals/check-ins actually change the session ----
+   Score rises on a low-confidence goal, a "lost" check-in, or a stuck
+   thread; falls on "clear" or resolved. The level it maps to (steady /
+   closer / extra) speeds up check-ins, shows a banner, and rides along
+   to the backend as a hint. */
+function nudgeSupport(delta) {
+  const s = state.support;
+  s.score = Math.max(0, Math.min(6, s.score + delta));
+  const prevLevel = s.level;
+  s.level = s.score >= 4 ? 'extra' : s.score >= 2 ? 'closer' : 'steady';
+  if (s.level !== prevLevel) logEvent('support_level_change', { from: prevLevel, to: s.level, score: s.score });
+  updateSupportBanner();
+  if (currentTab() === 'monitor') renderCheckin();
+  if (currentTab() === 'stats') renderStats();
+}
+function effectiveCheckinSec() {
+  const base = state.checkin.everySec;
+  if (state.support.level === 'extra') return Math.max(30, Math.round(base * 0.5));
+  if (state.support.level === 'closer') return Math.max(30, Math.round(base * 0.75));
+  return base;
+}
+function updateSupportBanner() {
+  const el = $('#supportBanner'); if (!el) return;
+  const s = state.support;
+  if (s.level === 'steady') { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = s.level === 'extra'
+    ? 'Extra support: check-ins are more frequent while we work through this together.'
+    : 'Checking in a little more often: a few spots have been tricky.';
+}
+/* Quick word-overlap check against the goal (stopwords stripped) -- no
+   AI call, so it still works offline. */
+const STOPWORDS = new Set(['the','a','an','to','of','in','on','for','and','or','is','are','was','were','it','its','that','this','what','why','how','do','does','did','i','me','my','understand','about','with','as','be','at','so','not']);
+function keywordsOf(text) {
+  return new Set((text.toLowerCase().match(/[a-z']+/g) || []).filter(w => w.length > 2 && !STOPWORDS.has(w)));
+}
+function goalOverlapWord(passage) {
+  if (!state.goal) return null;
+  const gw = keywordsOf(state.goal.text), pw = keywordsOf(passage);
+  for (const w of pw) if (gw.has(w)) return w;
+  return null;
+}
+
+/* ---- Saving progress to the database ----
+   A "session" is one student's attempt at one reading, created on first
+   real use (a goal, a debug spot, a check-in) rather than the moment the
+   reading opens -- so just browsing doesn't clutter the teacher's data.
+   A failed save just warns to console; the session keeps working locally. */
 async function ensureSession() {
   if (state.session.id) return state.session.id;
   if (!state.user) return null;
@@ -172,6 +229,12 @@ const DEMO_REPLIES = {
   ],
   stuck: [
     'That’s okay. This one is flagged so your teacher can see it. Break it down: what is the subject, what is it doing, and which earlier line does it depend on?'
+  ],
+  // Shown after a student has struggled through a couple of follow-ups in a
+  // row -- a more direct nudge instead of yet another open question.
+  giveup: [
+    'No worries -- here is the key idea plainly: focus on who is doing what in this sentence, and what changed right before it. Reread it once more with that in mind, then tell me if it clicks.',
+    'That is okay, let us just walk through it directly: look at the subject of the sentence and the one earlier detail it depends on. Put those two together and see if it makes sense now.'
   ]
 };
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
@@ -193,10 +256,11 @@ async function callBackend(path, body) {
 
 async function askPartner(payload) {
   const d = await callBackend('/partner', payload);
-  if (d && d.reply) return { reply: d.reply, demo: false };
+  if (d && d.reply) return { reply: d.reply, mode: d.mode || null, demo: false };
   await new Promise(r => setTimeout(r, 450));
   let reply;
   if (payload.mode === 'debug') reply = pick(DEMO_REPLIES[payload.problem] || DEMO_REPLIES.lost);
+  else if (payload.mode === 'giveup') reply = pick(DEMO_REPLIES.giveup);
   else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
   else reply = pick(DEMO_REPLIES.followup);
   return { reply, demo: true };
@@ -205,12 +269,26 @@ async function askPartner(payload) {
 function partnerPayload(mode, t, message) {
   return {
     mode, problem: t.problem, passage: t.text, paragraph: t.paragraph,
-    goal: state.goal && state.goal.text, message: message || null,
-    history: t.msgs.filter(m => !m.typing).map(m => ({ role: m.from === 'you' ? 'student' : 'coach', text: m.text }))
+    goal: state.goal && state.goal.text, goal_hint: t.goalHint || null,
+    support: state.support.level, message: message || null,
+    // 'auto' means let the backend detect the passage's language itself;
+    // anything else is an explicit override from the Progress tab toggle.
+    response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage,
+    // The backend counts earlier coach turns with mode "stuck" to pick the hint level,
+    // so each coach turn carries the mode the backend returned for it.
+    history: t.msgs.filter(m => !m.typing).map(m => m.from === 'you'
+      ? { role: 'student', text: m.text }
+      : { role: 'coach', text: m.text, mode: m.mode || null })
   };
 }
 
-/* ---------- Offline check-in prompts (used only if the backend is unavailable) ---------- */
+function setResponseLanguage(lang) {
+  state.responseLanguage = lang;
+  try { localStorage.setItem('responseLanguage', lang); } catch (e) { /* private browsing etc -- still works for this session */ }
+  renderStats();
+}
+
+/* ---- Offline check-in prompts: backend-unavailable fallback ---- */
 const OFFLINE_CHECKINS = [
   'Pause for a moment. In one sentence, what have you read so far?',
   'Is what you just read matching your goal? What is still missing?',
@@ -237,40 +315,80 @@ function updateBadges() {
   $('#monDot').hidden = !(has && currentTab() !== 'monitor');
 }
 
-/* ---------- Goal tab ---------- */
-function renderGoal() {
-  const g = state.goal;
-  const el = $('#p-goal');
-  el.innerHTML = `
-    <h3>Before you read</h3>
-    <p class="lead">Set a purpose. Readers who know what they want from a text notice sooner when they lose it.</p>
+/* ---- Goal tab ---- */
+function goalFormHtml(g) {
+  return `
     <label class="f" for="goalText">What do you want to get out of this text?</label>
     <textarea id="goalText" placeholder="Example: Understand why Mara uses the lamp signal.">${g ? esc(g.text) : ''}</textarea>
     <label class="f">How well do you expect to understand it?</label>
     <div class="scale" id="conf">
       ${[1,2,3,4,5].map(n => `<button type="button" data-n="${n}" aria-pressed="${g && g.confidence === n}">${n}</button>`).join('')}
     </div>
-    <div class="scale-cap"><span>Not at all</span><span>Very well</span></div>
-    <div class="row" style="margin-top:14px">
-      <button class="btn" id="setGoal" type="button">${g ? 'Update goal' : 'Set goal and start reading'}</button>
-    </div>
-    ${g ? '<p class="small" style="margin-top:10px">Goal saved. Check-ins are on. Change them in the Check-in tab.</p>' : ''}`;
+    <div class="scale-cap"><span>Not at all</span><span>Very well</span></div>`;
+}
+/* Shared by the Goal tab and the start-of-session popup, so the two never
+   drift out of sync. `scope` is the element the form lives in; `onDone`
+   runs after the goal is saved (closing the popup, switching tabs, etc). */
+function wireGoalForm(scope, g, onDone) {
   let conf = g ? g.confidence : null;
-  $$('#conf button', el).forEach(b => b.addEventListener('click', () => {
-    conf = +b.dataset.n; $$('#conf button', el).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  $$('#conf button', scope).forEach(b => b.addEventListener('click', () => {
+    conf = +b.dataset.n; $$('#conf button', scope).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
   }));
-  $('#setGoal', el).addEventListener('click', () => {
-    const text = $('#goalText', el).value.trim();
-    if (!text) { $('#goalText', el).focus(); return; }
+  return () => {
+    const text = $('#goalText', scope).value.trim();
+    if (!text) { $('#goalText', scope).focus(); return false; }
     state.goal = { text, confidence: conf };
     logEvent('goal_set', { goal: text, confidence: conf });
     $('#goalLine').textContent = 'Goal: ' + text;
     if (state.session.id) dbUpdateSession({ goal: text, confidence: conf });
     else ensureSession();
     if (!state.checkin.on) startCheckins();
-    renderGoal();
-    setTab('debug');
-  });
+    if (onDone) onDone();
+    return true;
+  };
+}
+function renderGoal() {
+  const g = state.goal;
+  const el = $('#p-goal');
+  el.innerHTML = `
+    <h3>Before you read</h3>
+    <p class="lead">Set a purpose. Readers who know what they want from a text notice sooner when they lose it.</p>
+    ${goalFormHtml(g)}
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="setGoal" type="button">${g ? 'Update goal' : 'Set goal and start reading'}</button>
+    </div>
+    ${g ? '<p class="small" style="margin-top:10px">Goal saved. Check-ins are on. Change them in the Check-in tab.</p>' : ''}`;
+  const save = wireGoalForm(el, g, () => { renderGoal(); renderDebug(); setTab('debug'); });
+  $('#setGoal', el).addEventListener('click', save);
+}
+
+/* ---- Goal popup: shown once per session the moment a reading opens, so
+   setting a purpose isn't something a student can just scroll past. The
+   Goal tab still exists for changing it later. ---- */
+function ensureGoalDialog() {
+  let dlg = $('#goalDlg');
+  if (dlg) return dlg;
+  dlg = document.createElement('dialog');
+  dlg.id = 'goalDlg';
+  document.body.appendChild(dlg);
+  return dlg;
+}
+function showGoalPopup() {
+  const dlg = ensureGoalDialog();
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3 style="margin:0 0 4px">Before you start reading</h3>
+      <p class="small" style="margin:0 0 14px">Set a purpose for this text -- it helps you notice sooner if you lose the thread.</p>
+      ${goalFormHtml(null)}
+      <div class="row" style="margin-top:14px; justify-content:flex-end">
+        <button class="btn alt" type="button" id="goalSkip">Skip for now</button>
+        <button class="btn" type="button" id="goalSave">Start reading</button>
+      </div>
+    </form>`;
+  const save = wireGoalForm(dlg, null, () => { dlg.close(); renderGoal(); renderDebug(); });
+  $('#goalSave', dlg).addEventListener('click', () => { if (save()) dlg.close(); });
+  $('#goalSkip', dlg).addEventListener('click', () => dlg.close());
+  dlg.showModal();
 }
 
 /* ---------- Text selection -> Debug ---------- */
@@ -303,10 +421,12 @@ function shorten(s, n = 90) { return s.length > n ? s.slice(0, n - 1) + '…' : 
 function renderDebug() {
   const el = $('#p-debug');
   const p = state.pending;
+  const goalWord = p ? goalOverlapWord(p.text) : null;
   const chooser = p ? `
     <div class="card">
       <p class="small" style="margin:0 0 4px">You selected</p>
       <blockquote class="quote" style="margin:0 0 10px; padding-left:10px; border-left:3px solid var(--accent); font-family:var(--serif); font-size:15px">${esc(shorten(p.text, 160))}</blockquote>
+      ${goalWord ? `<p class="small" style="margin:0 0 8px; color:var(--accent)">This looks related to your goal (“${esc(goalWord)}”), worth sorting out before moving on.</p>` : ''}
       <p class="small" style="margin:0 0 8px">What is going wrong?</p>
       <div class="chips">
         ${Object.entries(PROBLEMS).map(([k, v]) => `<button type="button" data-problem="${k}">${v.label}<small>${v.sub}</small></button>`).join('')}
@@ -322,14 +442,14 @@ function renderDebug() {
       <span class="tag ${t.status}">${t.status === 'resolved' ? 'Clear now' : t.status === 'stuck' ? 'Still stuck' : PROBLEMS[t.problem].label}</span>
       <blockquote class="quote">${esc(shorten(t.text, 140))}</blockquote>
       ${t.msgs.map(m => `<div class="msg ${m.from}${m.typing ? ' typing' : ''}">${esc(m.text)}${m.demo ? '<div class="small" style="margin-top:4px">Offline demo reply (backend not reached)</div>' : ''}</div>`).join('')}
-      ${t.status === 'open' && !t.busy ? `
+      ${t.status !== 'resolved' && !t.busy ? `
         <form class="reply" data-id="${t.id}">
           <input type="text" placeholder="Explain it in your own words" aria-label="Your reply" autocomplete="off">
           <button class="btn" type="submit">Send</button>
         </form>
         <div class="row" style="margin-top:8px">
           <button class="btn alt" type="button" data-act="resolve" data-id="${t.id}">Makes sense now</button>
-          <button class="btn alt" type="button" data-act="stuck" data-id="${t.id}">Still stuck</button>
+          ${t.gaveUp ? '' : `<button class="btn alt" type="button" data-act="stuck" data-id="${t.id}">Still stuck</button>`}
         </div>` : ''}
     </div>`).join('');
   el.innerHTML = chooser + threads;
@@ -356,14 +476,18 @@ function startDebug(problem) {
   const id = ++threadSeq;
   const mark = wrapRange(p.range, id);
   getSelection().removeAllRanges();
-  const t = { id, problem, text: p.text, paragraph: p.paragraph, status: 'open', busy: true, msgs: [{ from: 'ai', text: 'Thinking…', typing: true }], mark };
+  const t = {
+    id, problem, text: p.text, paragraph: p.paragraph, status: 'open', busy: true,
+    attempts: 0, gaveUp: false, goalHint: goalOverlapWord(p.text),
+    msgs: [{ from: 'ai', text: 'Thinking…', typing: true }], mark
+  };
   state.threads.push(t);
   state.pending = null;
   logEvent('debug_start', { id, problem, passage: p.text });
   dbInsertDebugEvent(t);
   renderDebug();
   askPartner(partnerPayload('debug', t))
-    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, demo: r.demo }]; renderDebug(); });
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }]; renderDebug(); });
 }
 function wrapRange(range, id) {
   const mark = document.createElement('mark');
@@ -373,13 +497,18 @@ function wrapRange(range, id) {
 }
 async function sendFollowup(id, message) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
+  t.attempts = (t.attempts || 0) + 1;
+  // After a couple of follow-ups with no resolution, stop asking another
+  // question and have the coach just explain the key idea directly.
+  const mode = t.attempts >= 2 ? 'giveup' : 'followup';
+  const payload = partnerPayload(mode, t, message);
   t.msgs.push({ from: 'you', text: message });
-  const payload = partnerPayload('followup', t, message);
   t.busy = true; t.msgs.push({ from: 'ai', text: 'Thinking…', typing: true });
-  logEvent('debug_reply', { id, message });
+  logEvent('debug_reply', { id, message, mode });
   renderDebug();
   const r = await askPartner(payload);
-  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
+  t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
+  if (mode === 'giveup') t.gaveUp = true;
   renderDebug();
 }
 function setStatus(id, status) {
@@ -392,12 +521,12 @@ function setStatus(id, status) {
 }
 async function markStuck(id) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
-  t.status = 'stuck'; t.busy = true;
+  t.status = 'stuck'; t.busy = true; t.gaveUp = true;
   if (t.mark) t.mark.classList.add('stuck');
   logEvent('debug_stuck', { id });
   dbUpdateDebugStatus(t);
   const r = await askPartner(partnerPayload('stuck', t));
-  t.msgs.push({ from: 'ai', text: r.reply, demo: r.demo }); t.busy = false;
+  t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   renderDebug();
 }
 reader.addEventListener('click', e => {
@@ -407,7 +536,7 @@ reader.addEventListener('click', e => {
   if (card) { card.scrollIntoView({ block: 'nearest' }); m.classList.add('active'); setTimeout(() => m.classList.remove('active'), 1200); }
 });
 
-/* ---------- Check-in tab (periodic monitoring prompts) ---------- */
+/* ---- Check-in tab + floating popup ---- */
 function startCheckins() {
   const c = state.checkin; c.on = true; c.nextAt = Date.now() + c.everySec * 1000;
 }
@@ -429,6 +558,11 @@ async function fireCheckin() {
   logEvent('checkin_prompt', { prompt, source });
   updateBadges();
   if (currentTab() === 'monitor') renderCheckin();
+  // A popup is more likely to actually get seen than a dot on a tab the
+  // student isn't looking at -- that was the main complaint about check-ins.
+  // Always show it (even on the Monitor tab itself) so testing via "Ask me
+  // now" is never a silent no-op.
+  if (c.popupOn) showCheckinPopup();
 }
 function renderCheckin() {
   const c = state.checkin, el = $('#p-monitor');
@@ -439,49 +573,101 @@ function renderCheckin() {
       <div><b>Remind me</b><div class="small" id="cd"></div></div>
       <button type="button" id="cinToggle" role="switch" aria-checked="${c.on}" aria-label="Turn check-ins on or off"></button>
     </div>
-    <label class="f" for="cinEvery">How often</label>
+    <div class="switch">
+      <div><b>Pop up when ready</b><div class="small">Show it right away instead of waiting for you to open this tab</div></div>
+      <button type="button" id="cinPopupToggle" role="switch" aria-checked="${c.popupOn}" aria-label="Turn the check-in popup on or off"></button>
+    </div>
+    <label class="f" for="cinEvery">How often (baseline)</label>
     <select id="cinEvery">
       ${[30, 60, 90, 180, 300].map(s => `<option value="${s}" ${s === c.everySec ? 'selected' : ''}>Every ${s < 60 ? s + ' seconds' : (s / 60) + (s === 60 ? ' minute' : ' minutes')}</option>`).join('')}
     </select>
     <div class="row" style="margin:12px 0"><button class="btn alt" id="askNow" type="button">Ask me now</button></div>
     <div id="cinCard"></div>
-    ${c.responses.length ? `<p class="small">${c.responses.length} check-in${c.responses.length > 1 ? 's' : ''} answered</p>` : ''}`;
+    ${c.responses.length ? `<p class="small">${c.responses.length} check-in${c.responses.length > 1 ? 's' : ''} answered</p>` : ''}
+    <p class="small" style="margin-top:16px; padding-top:12px; border-top:1px solid var(--w-line)">
+      Check-ins are part of this project: short, occasional pauses that help you notice sooner if you've
+      drifted from the text, and help your teacher see where students are getting stuck. Answering honestly
+      (including "I'm lost") is what makes them useful -- it's not graded.
+    </p>`;
 
   $('#cinToggle', el).addEventListener('click', () => { c.on ? (c.on = false) : startCheckins(); renderCheckin(); });
-  $('#cinEvery', el).addEventListener('change', e => { c.everySec = +e.target.value; if (c.on) c.nextAt = Date.now() + c.everySec * 1000; });
+  $('#cinPopupToggle', el).addEventListener('click', () => {
+    c.popupOn = !c.popupOn;
+    try { localStorage.setItem('checkinPopupOn', c.popupOn ? 'on' : 'off'); } catch (e) { /* private browsing etc */ }
+    renderCheckin();
+  });
+  $('#cinEvery', el).addEventListener('change', e => { c.everySec = +e.target.value; if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000; });
   $('#askNow', el).addEventListener('click', () => { if (c.pending || c.fetching) renderCheckin(); else fireCheckin(); });
   drawCheckinCard();
   updateCountdown();
   updateBadges();
 }
-function drawCheckinCard() {
-  const c = state.checkin, box = $('#cinCard'); if (!box) return;
-  if (c.fetching) { box.innerHTML = '<p class="small">Thinking of a question…</p>'; return; }
-  if (!c.pending) { box.innerHTML = ''; return; }
-  box.innerHTML = `
-    <div class="card">
-      <b>${esc(c.pending)}</b>
-      <textarea id="cinAnswer" style="margin-top:8px" placeholder="Type a quick answer (optional)"></textarea>
-      <p class="small" style="margin:10px 0 6px">How is it going?</p>
-      <div class="row">
-        <button class="btn alt" data-level="clear" type="button">I follow it</button>
-        <button class="btn alt" data-level="fuzzy" type="button">A bit fuzzy</button>
-        <button class="btn alt" data-level="lost" type="button">I'm lost</button>
-      </div>
+/* Shared by the Monitor-tab card and the floating popup. `onAfter` lets
+   the popup close itself once answered; the tab card just re-renders. */
+function checkinCardHtml(prompt) {
+  return `
+    <b>${esc(prompt)}</b>
+    <textarea class="cinAnswer" style="margin-top:8px" placeholder="Type a quick answer (optional)"></textarea>
+    <p class="small" style="margin:10px 0 6px">How is it going?</p>
+    <div class="row">
+      <button class="btn alt" data-level="clear" type="button">I follow it</button>
+      <button class="btn alt" data-level="fuzzy" type="button">A bit fuzzy</button>
+      <button class="btn alt" data-level="lost" type="button">I'm lost</button>
     </div>`;
+}
+function wireCheckinCard(box, onAfter) {
   $$('button[data-level]', box).forEach(b => b.addEventListener('click', () => {
+    const c = state.checkin;
     const level = b.dataset.level;
-    const answerText = $('#cinAnswer', box).value.trim();
+    const answerText = ($('.cinAnswer', box) || {}).value?.trim() || '';
     c.responses.push({ level, prompt: c.pending, answer: answerText });
     logEvent('checkin_response', { level, prompt: c.pending, answer: answerText });
     dbInsertCheckin(c.pending, level, answerText);
     c.pending = null;
-    if (c.on) c.nextAt = Date.now() + c.everySec * 1000;
-    renderCheckin();
-    if (level !== 'clear') {
-      $('#cinCard').innerHTML = `<div class="card"><b>Try this</b><p style="margin:6px 0 0">Find the last sentence you understood, then the first one you didn't. Select that spot in the text and debug it.</p></div>`;
-    }
+    if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
+    if (currentTab() === 'monitor') renderCheckin(); else updateBadges();
+    if (onAfter) onAfter(level);
   }));
+}
+function drawCheckinCard() {
+  const c = state.checkin, box = $('#cinCard'); if (!box) return;
+  if (c.fetching) { box.innerHTML = '<p class="small">Thinking of a question…</p>'; return; }
+  if (!c.pending) { box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="card">${checkinCardHtml(c.pending)}</div>`;
+  wireCheckinCard(box, (level) => {
+    if (level !== 'clear') {
+      $('#cinCard').innerHTML = `<div class="card"><b>Try this</b><p style="margin:6px 0 0">Find the last sentence you understood, then the first one you didn't. Select that spot in the text and debug it.</p>
+        <div class="row" style="margin-top:8px"><button class="btn alt" type="button" id="goDebugFromCheckin">Open Debug tab</button></div></div>`;
+      const go = $('#goDebugFromCheckin'); if (go) go.addEventListener('click', () => setTab('debug'));
+    } else {
+      drawCheckinCard();
+    }
+  });
+}
+/* Floating, non-blocking popup -- sits in the corner so a student can keep
+   reading, answer right there, or dismiss it and answer later from the
+   Monitor tab (the dot badge stays on until it's answered). */
+function ensureCheckinPopupHost() {
+  let host = $('#checkinPopupHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'checkinPopupHost';
+    document.body.appendChild(host);
+  }
+  return host;
+}
+function showCheckinPopup() {
+  const c = state.checkin;
+  if (!c.pending) return;
+  const host = ensureCheckinPopupHost();
+  host.innerHTML = `
+    <div class="checkin-popup" role="dialog" aria-label="Check-in">
+      <button class="checkin-popup-close" type="button" aria-label="Dismiss, answer later">✕</button>
+      ${checkinCardHtml(c.pending)}
+    </div>`;
+  const popup = $('.checkin-popup', host);
+  $('.checkin-popup-close', popup).addEventListener('click', () => { host.innerHTML = ''; });
+  wireCheckinCard(popup, () => { host.innerHTML = ''; });
 }
 function updateCountdown() {
   const c = state.checkin, el = $('#cd'); if (!el) return;
@@ -496,13 +682,21 @@ setInterval(() => {
   if (currentTab() === 'monitor') updateCountdown();
 }, 1000);
 
-/* ---------- Progress tab ---------- */
+/* ---- Progress tab ---- */
+const SUPPORT_LABEL = { steady: 'Steady: check-ins at your normal pace', closer: 'Checking in a bit closer together', extra: 'Extra support: check-ins are more frequent' };
 function renderStats() {
   const t = state.threads;
   const resolved = t.filter(x => x.status === 'resolved').length;
   const stuck = t.filter(x => x.status === 'stuck').length;
   const mins = Math.max(1, Math.round((Date.now() - state.startedAt) / 60000));
   const ci = state.checkin.responses;
+  const trend = ci.length ? `
+    <p class="small" style="margin:14px 0 4px">How check-ins have gone, in order:</p>
+    <div class="ci-trend">${ci.map(r => `<i class="ci-dot ${r.level}" title="${r.level}"></i>`).join('')}</div>` : '';
+  const g = state.goal;
+  const goalRating = !g ? '' : g.finalConfidence == null ? `
+    <div class="row" style="margin-top:10px"><button class="btn alt" id="rateGoalBtn" type="button">Rate how well you met your goal</button></div>` : `
+    <p class="small" style="margin-top:10px">Expected to understand it: <b>${g.confidence ?? 'N/A'}/5</b> &middot; Actually did: <b>${g.finalConfidence}/5</b></p>`;
   $('#p-stats').innerHTML = `
     <h3>Your session</h3>
     <p class="lead">${state.goal ? 'Goal: ' + esc(state.goal.text) : 'No goal set yet.'}</p>
@@ -513,13 +707,31 @@ function renderStats() {
       <div class="stat"><b>${ci.length}</b><span>Check-ins answered</span></div>
       <div class="stat" style="grid-column:1/-1"><b>${mins} min</b><span>Time in session</span></div>
     </div>
-    <div class="row">
-      <button class="btn" id="exportBtn" type="button">Download session data</button>
-      <button class="btn alt" id="resetBtn" type="button">Start over</button>
+    ${trend}
+    ${goalRating}
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="endSessionBtn" type="button">End session</button>
+      <button class="btn alt" id="exportBtn" type="button">Download session data</button>
     </div>
-    <p class="small" style="margin-top:10px">The download is a JSON file of everything above. The teacher dashboard reads from the database directly.</p>`;
+    <p class="small" style="margin-top:10px">The download is a JSON file of everything above. The teacher dashboard reads from the database directly.</p>
+    <p class="small" style="margin-top:4px"><a href="#" id="startOverLink">Start over on this same reading instead</a></p>`;
+  $('#endSessionBtn').addEventListener('click', endSession);
   $('#exportBtn').addEventListener('click', exportLog);
-  $('#resetBtn').addEventListener('click', () => { if (confirm('Clear marks, goal, and progress for this session?')) resetSession(); });
+  $('#startOverLink').addEventListener('click', (e) => { e.preventDefault(); if (confirm('Clear marks, goal, and progress for this reading and start it over?')) resetSession(); });
+  const rateBtn = $('#rateGoalBtn');
+  if (rateBtn) rateBtn.addEventListener('click', () => {
+    $('#p-stats').insertAdjacentHTML('beforeend', `
+      <div class="card" id="goalRateCard" style="margin-top:10px">
+        <p class="small" style="margin:0 0 8px">How well did you end up understanding it?</p>
+        <div class="scale" id="finalConf">${[1,2,3,4,5].map(n => `<button type="button" data-n="${n}">${n}</button>`).join('')}</div>
+      </div>`);
+    $$('#finalConf button').forEach(b => b.addEventListener('click', () => {
+      g.finalConfidence = +b.dataset.n;
+      logEvent('goal_final_rating', { confidence: g.confidence, finalConfidence: g.finalConfidence });
+      if (state.session.id) dbUpdateSession({ final_confidence: g.finalConfidence });
+      renderStats();
+    }));
+  });
 }
 function exportLog() {
   const data = { exportedAt: new Date().toISOString(), goal: state.goal, events: state.log };
@@ -539,6 +751,15 @@ function resetSession() {
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
   $('#goalLine').textContent = 'No goal set yet';
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
+  const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
+}
+/* "End session" leaves this reading entirely and returns to the picker
+   (distinct from "Start over", which clears progress but stays on the
+   same text) -- what gets saved is already saved either way. */
+function endSession() {
+  if (!confirm('End this reading session and go back to all readings?')) return;
+  resetSession();
+  showReadingPicker();
 }
 
 function setReaderText(title, byline, bodyParagraphsHtml) {
@@ -599,16 +820,17 @@ function showView(name) {
   $$('.view').forEach(v => { v.hidden = v.id !== name + 'View'; });
   if (name === 'quizzes') renderQuizzesView();
   if (name === 'classes') renderClassesView();
+  if (name === 'history') renderHistoryView();
   if (name === 'settings') renderSettings('settingsPane', state.user);
 }
 $$('.side-link').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 
-/* =====================================================================
-   CLASSES: join a teacher's class with a short code. Readings in
-   Readings/Quizzes are limited (by the database's own rules) to
-   teachers whose class you've joined, so this is also how a student
-   unlocks their teacher's material.
-   ===================================================================== */
+/* CLASSES: join a teacher's class with a code. Visible readings are
+   filtered to general readings plus classes you've joined in
+   getVisibleReadings() above -- that's enforced in this query, not by a
+   Row Level Security policy, so it's only as strong as this code path
+   (every reading fetch should go through getVisibleReadings(), never a
+   raw .from('readings') select). */
 async function renderClassesView() {
   const el = $('#classesPane');
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
@@ -684,6 +906,70 @@ async function renderClassesView() {
   }));
 }
 
+/* HISTORY: every past session for this student, own data only -- row-level
+   security already scopes this to state.user.id, same as every other
+   student-side query, so no RPC is needed here (unlike the teacher-side
+   class drill-down, which has to read across students). */
+async function renderHistoryView() {
+  const el = $('#historyPane');
+  el.innerHTML = `<h1>Your history</h1><p class="hint">Loading…</p>`;
+
+  const { data: sessions, error } = await supa
+    .from('sessions')
+    .select('id, goal, confidence, final_confidence, created_at, readings(title)')
+    .eq('student_id', state.user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    // A missing column is a setup problem, not something the student did
+    // wrong, so say which migration fixes it instead of showing them the
+    // raw Postgres message and leaving them stuck.
+    const needsMigration = /created_at|column .* does not exist/i.test(error.message);
+    el.innerHTML = `<h1>Your history</h1><p class="small" style="color:var(--bug)">Could not load your history: ${esc(error.message)}${
+      needsMigration ? '. Run sessions_created_at_migration.sql in Supabase to add the missing column.' : ''
+    }</p>`;
+    return;
+  }
+  if (!sessions || !sessions.length) {
+    el.innerHTML = `<h1>Your history</h1><p class="hint">Once you start a reading, your past sessions will show up here.</p>`;
+    return;
+  }
+
+  // Two batched queries instead of one per session row.
+  const ids = sessions.map(s => s.id);
+  const [{ data: debugRows }, { data: checkinRows }] = await Promise.all([
+    supa.from('debug_events').select('session_id, status').in('session_id', ids),
+    supa.from('checkin_events').select('session_id, level').in('session_id', ids)
+  ]);
+  const statsFor = (id) => {
+    const d = (debugRows || []).filter(r => r.session_id === id);
+    const c = (checkinRows || []).filter(r => r.session_id === id);
+    return { resolved: d.filter(r => r.status === 'resolved').length, stuck: d.filter(r => r.status === 'stuck').length, total: d.length, checkins: c.length };
+  };
+
+  const rows = sessions.map(s => {
+    const st = statsFor(s.id);
+    const when = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
+    const title = (s.readings && s.readings.title) || 'A pasted or deleted text';
+    return `<div class="reading-row-card">
+      <div>
+        <b>${esc(title)}</b>
+        <div class="small">
+          ${when ? when + ' &middot; ' : ''}${s.goal ? 'Goal: ' + esc(s.goal) + ' &middot; ' : ''}
+          ${st.total} spot${st.total === 1 ? '' : 's'} debugged (${st.resolved} cleared up, ${st.stuck} still stuck)
+          &middot; ${st.checkins} check-in${st.checkins === 1 ? '' : 's'}
+          ${s.confidence != null && s.final_confidence != null ? ` &middot; Confidence ${s.confidence} &rarr; ${s.final_confidence}` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <h1>Your history</h1>
+    <p class="hint">Every reading session you've started, most recent first.</p>
+    <div style="display:flex; flex-direction:column; gap:10px; margin-top:12px">${rows}</div>`;
+}
+
 function handleLogin(profile) {
   state.user = profile; // { id, role, full_name }
   $('#userName').textContent = profile.full_name || 'Student';
@@ -716,6 +1002,22 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
 function demoReadingObjs() { return DEMO_READINGS.map(d => ({ id: d.id, title: d.title, body: d.text })); }
 const BOOK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>`;
 
+/* Readings a student can actually see: general readings (class_id is
+   null, every teacher's "Add a reading" default) plus readings from
+   classes they've joined. Shared by the reading picker and the quiz
+   picker so both match the promise made on the Classes tab -- "only
+   students who join can see the readings you add". */
+async function getVisibleReadings() {
+  if (!state.user) return { data: [], error: null };
+  const { data: memberships, error: memErr } = await supa
+    .from('class_members').select('class_id').eq('student_id', state.user.id);
+  if (memErr) return { data: null, error: memErr };
+  const classIds = (memberships || []).map(m => m.class_id);
+  let query = supa.from('readings').select('id, title, body, created_at').order('created_at', { ascending: false });
+  query = classIds.length ? query.or(`class_id.is.null,class_id.in.(${classIds.join(',')})`) : query.is('class_id', null);
+  return await query;
+}
+
 $('#changeReadingBtn').addEventListener('click', () => showReadingPicker());
 
 async function showReadingPicker() {
@@ -724,8 +1026,7 @@ async function showReadingPicker() {
   picker.hidden = false;
   picker.innerHTML = `<h1>Choose a reading</h1><p class="hint">Loading…</p>`;
 
-  const { data: readings, error } = await supa
-    .from('readings').select('id, title, body, created_at').order('created_at', { ascending: false });
+  const { data: readings, error } = await getVisibleReadings();
 
   const teacherGrid = (!error && readings && readings.length)
     ? readingCardsHtml(readings, BOOK_ICON)
@@ -769,6 +1070,7 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   $('#pasteBtn').hidden = false;
 
   renderGoal(); renderDebug();
+  showGoalPopup();
 }
 
 /* =====================================================================
@@ -805,8 +1107,7 @@ async function renderQuizPicker() {
   const el = $('#quizzesPane');
   el.innerHTML = `<h1>Quizzes</h1><p class="hint">Loading…</p>`;
 
-  const { data: readings, error } = await supa
-    .from('readings').select('id, title, body, created_at').order('created_at', { ascending: false });
+  const { data: readings, error } = await getVisibleReadings();
 
   const teacherGrid = (!error && readings && readings.length)
     ? readingCardsHtml(readings, QUIZ_ICON)
@@ -815,9 +1116,9 @@ async function renderQuizPicker() {
 
   el.innerHTML = `
     <h1>Quizzes</h1>
-    <p class="hint">Pick a built-in practice text, something your teacher added, or paste your own.</p>
-    <h3 style="margin:22px 0 0">Built-in practice readings</h3>
-    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true })}
+    <p class="hint">Pick a reading to test yourself on: a built-in text, something your teacher added, or your own paste.</p>
+    <h3 style="margin:22px 0 0">Built-in practice texts</h3>
+    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true, kind: 'quiz' })}
     <h3 style="margin:28px 0 0">From your classes</h3>
     ${teacherGrid}
     <div class="row" style="margin-top:16px">

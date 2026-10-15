@@ -6,7 +6,7 @@
 <title>Reading Partner – Teacher</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <style>
   .reading-card { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 12px; }
@@ -21,6 +21,22 @@
   .reading-card .tiny { background: transparent; border: 0; color: var(--accent); font-size: 13px; font-weight: 600; padding: 2px 0; }
   .reading-card .tiny.danger { color: var(--bug); }
   .new-reading { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
+  .class-card { cursor: pointer; }
+  .class-card:hover { border-color: var(--accent); }
+  .class-card .row-top > div:first-child { min-width: 0; flex: 1 1 auto; }
+  .class-name-input {
+    font-family: var(--serif); font-weight: 700; font-size: 28px; line-height: 1.2;
+    border: 1px solid var(--w-line); border-radius: 8px; padding: 2px 8px; margin: -3px 0;
+    background: var(--w-bg); color: var(--w-ink); width: auto; max-width: 100%;
+  }
+  #classNameHeading { display: inline-flex; align-items: center; gap: 8px; }
+  #classNameHeading .edit-hint { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .student-row { cursor: pointer; }
+  .student-row:hover { border-color: var(--accent); }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }
+  .stat-tile { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .stat-tile .stat-num { font-family: var(--serif); font-size: 32px; font-weight: 600; line-height: 1.1; }
+  .stat-tile .stat-label { color: var(--muted); font-size: 13px; margin-top: 4px; }
 </style>
 </head>
 <body data-app="teacher">
@@ -32,7 +48,7 @@
 
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove()"></span>
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove(); this.previousElementSibling.style.display='flex'" onload="this.previousElementSibling.style.display='none'"></span>
         <span class="sidebar-brand-text">
           Reading Partner
           <span class="app-role-badge" id="appRoleBadge">Teacher</span>
@@ -68,19 +84,19 @@
       <section id="dashboardView" class="view">
         <div class="view-pad">
           <h1>Your readings</h1>
-          <p class="hint">Add a passage for your students, then check back here to see where they got stuck.</p>
+          <p class="hint">General readings, visible to every one of your students. To share a reading with just one class instead, open that class under Classes and add it there.</p>
 
           <div id="readingList"></div>
 
           <div class="new-reading">
-            <h3 style="margin:0 0 10px">Add a reading</h3>
+            <h3 style="margin:0 0 10px">Add a general reading</h3>
             <form id="newReadingForm">
               <label class="f" for="rFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
               <input type="file" id="rFile" accept=".pdf,.docx,.pptx,.txt">
               <p class="small" id="rFileMsg" style="min-height:16px"></p>
               <label class="f" for="rTitle">Title</label>
               <input type="text" id="rTitle" required>
-              <label class="f" for="rBody">Text (one blank line between paragraphs) &mdash; filled in automatically if you uploaded a file above</label>
+              <label class="f" for="rBody">Text (one blank line between paragraphs). Filled in automatically if you uploaded a file above</label>
               <textarea id="rBody" style="min-height:160px" required></textarea>
               <div class="row" style="margin-top:12px">
                 <button class="btn" type="submit">Add reading</button>
@@ -112,7 +128,7 @@
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="fileExtract.js"></script>
@@ -147,6 +163,19 @@ function showView(name) {
     b.classList.toggle('active', active);
     b.setAttribute('aria-current', active ? 'page' : 'false');
   });
+  // The admin nav button being hidden from non-admins is a CSS/markup
+  // convenience, not a real access control -- anyone can still call
+  // showView('admin') from the console, so this check (and the server
+  // rejecting admin_list_users() for non-admins) is what actually matters.
+  if (name === 'admin' && !(currentProfile && currentProfile.role === 'admin')) {
+    showToast("You don't have access to Admin.", 'bug');
+    name = 'dashboard';
+    document.querySelectorAll('.side-link').forEach(b => {
+      const active = b.dataset.view === name;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+  }
   document.querySelectorAll('.view').forEach(v => { v.hidden = v.id !== name + 'View'; });
   if (name === 'settings') renderSettings('settingsPane', currentProfile);
   if (name === 'classes') loadClasses();
@@ -215,13 +244,15 @@ async function loadClasses() {
     const { count } = await supa.from('class_members').select('student_id', { count: 'exact', head: true }).eq('class_id', c.id);
     const myDebug = (debugStats || []).filter(r => r.class_id === c.id);
     const myCheckins = (checkinStats || []).filter(r => r.class_id === c.id);
-    return `<div class="reading-card" data-class="${c.id}">
+    return `<div class="reading-card class-card" data-class="${c.id}" tabindex="0" role="button" aria-label="Open ${escapeHtml(c.name)}">
       <div class="row-top">
         <div>
           <h3>${escapeHtml(c.name)}</h3>
           <p class="meta">Join code <b style="letter-spacing:2px; color:var(--ink)">${c.join_code}</b> &middot; ${count || 0} student${count === 1 ? '' : 's'} joined</p>
         </div>
-        <button class="tiny danger" type="button" data-act="delete">Delete</button>
+        <div class="row" style="gap:10px">
+          <button class="tiny danger" type="button" data-act="delete">Delete</button>
+        </div>
       </div>
       ${classInsightsHtml(myDebug, myCheckins)}
     </div>`;
@@ -258,7 +289,8 @@ async function loadClasses() {
     showToast('Could not create class: ' + lastError.message, 'bug');
   });
 
-  el.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+  el.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     const card = btn.closest('.reading-card');
     if (!confirm('Delete this class? Students in it will lose access to your readings, and will need to join again if you recreate it.')) return;
     const { error } = await supa.from('classes').delete().eq('id', card.dataset.class);
@@ -266,6 +298,209 @@ async function loadClasses() {
     showToast('Class deleted.', 'ok');
     loadClasses();
   }));
+  // The whole card opens the class -- click anywhere that isn't a button
+  // inside it (the Delete button stops its own click from bubbling here).
+  el.querySelectorAll('.class-card').forEach(card => {
+    const open = () => openClassDetail(card.dataset.class);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
+}
+
+/* Drills into one class: each joined student and their progress across
+   this teacher's readings. Needs class_progress_migration.sql's
+   teacher_class_progress() RPC -- a teacher can't query other students'
+   sessions directly (row-level security), the same reason the class-wide
+   insight bars above go through an RPC instead of a plain select. */
+async function openClassDetail(classId) {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `<button class="ghost" id="classDetailBack" type="button">&larr; All classes</button><p class="hint">Loading…</p>`;
+  document.getElementById('classDetailBack').addEventListener('click', loadClasses);
+
+  const { data: cls, error: clsErr } = await supa.from('classes').select('*').eq('id', classId).single();
+  if (clsErr || !cls) {
+    el.innerHTML = `<button class="ghost" id="classDetailBack" type="button">&larr; All classes</button>
+      <p class="small" style="color:var(--bug)">Could not load this class${clsErr ? ': ' + escapeHtml(clsErr.message) : ''}.</p>`;
+    document.getElementById('classDetailBack').addEventListener('click', loadClasses);
+    return;
+  }
+
+  const [{ data: progressRows, error: progErr }, { data: debugStats }, { data: checkinStats }] = await Promise.all([
+    supa.rpc('teacher_class_progress', { p_class_id: classId }),
+    supa.rpc('teacher_debug_stats'),
+    supa.rpc('teacher_checkin_stats')
+  ]);
+  const needsMigration = progErr && /function|does not exist|schema cache/i.test(progErr.message);
+
+  // General class stats dashboard: totals across every joined student,
+  // plus the same "where they're getting stuck" bars shown on the class
+  // list card -- scoped to this one class.
+  let dashboardHtml = '';
+  if (!progErr && progressRows && progressRows.length) {
+    const sum = (key) => progressRows.reduce((t, r) => t + Number(r[key] || 0), 0);
+    const myDebug = (debugStats || []).filter(r => r.class_id === classId);
+    const myCheckins = (checkinStats || []).filter(r => r.class_id === classId);
+    dashboardHtml = `
+      <div class="stat-grid">
+        <div class="stat-tile"><div class="stat-num">${progressRows.length}</div><div class="stat-label">Student${progressRows.length === 1 ? '' : 's'} joined</div></div>
+        <div class="stat-tile"><div class="stat-num">${sum('sessions_count')}</div><div class="stat-label">Reading sessions</div></div>
+        <div class="stat-tile"><div class="stat-num">${sum('resolved_count')}</div><div class="stat-label">Cleared up</div></div>
+        <div class="stat-tile"><div class="stat-num">${sum('stuck_count')}</div><div class="stat-label">Still stuck</div></div>
+        <div class="stat-tile"><div class="stat-num">${sum('checkins_count')}</div><div class="stat-label">Check-ins</div></div>
+        <div class="stat-tile"><div class="stat-num">${sum('checkins_lost_count')}</div><div class="stat-label">"I'm lost" check-ins</div></div>
+      </div>
+      ${classInsightsHtml(myDebug, myCheckins)}`;
+  }
+
+  const studentsHtml = progErr
+    ? `<p class="small" style="color:var(--bug)">Could not load student progress: ${escapeHtml(progErr.message)}${needsMigration ? ' -- run class_progress_migration.sql in Supabase first.' : ''}</p>`
+    : (!progressRows || !progressRows.length)
+      ? '<p class="small">No students have joined this class yet.</p>'
+      : `<div style="display:flex; flex-direction:column; gap:10px">${progressRows.map(r => `
+          <div class="reading-row-card student-row" data-student="${r.student_id}" tabindex="0" role="button" aria-label="Open ${escapeHtml(r.full_name || 'this student')}">
+            <div>
+              <b>${escapeHtml(r.full_name || '(no name)')}</b>
+              <div class="small">
+                ${r.sessions_count} session${r.sessions_count === 1 ? '' : 's'} &middot;
+                ${r.resolved_count} cleared up &middot; ${r.stuck_count} still stuck
+                ${r.open_count ? ` &middot; ${r.open_count} in progress` : ''}
+                &middot; ${r.checkins_count} check-in${r.checkins_count === 1 ? '' : 's'}${r.checkins_lost_count ? ` (${r.checkins_lost_count} "I'm lost")` : ''}
+              </div>
+            </div>
+          </div>`).join('')}</div>`;
+
+  el.innerHTML = `
+    <button class="ghost" id="classDetailBack" type="button">&larr; All classes</button>
+    <h1 id="classNameHeading" title="Click to rename">${escapeHtml(cls.name)}<span class="edit-hint">&#9998; rename</span></h1>
+    <p class="meta">Join code <b style="letter-spacing:2px; color:var(--ink)">${cls.join_code}</b></p>
+
+    ${dashboardHtml}
+
+    <h3 style="margin:26px 0 4px">Students</h3>
+    <p class="hint">Click a student to see their own progress. Each joined student's summary across this class's readings.</p>
+    ${studentsHtml}
+
+    <h3 style="margin:28px 0 4px">Readings for this class</h3>
+    <p class="hint">Only students who've joined ${escapeHtml(cls.name)} see these.</p>
+    <div id="classReadingList"></div>
+    <div class="new-reading">
+      <h3 style="margin:0 0 10px">Add a reading to this class</h3>
+      <form id="newClassReadingForm">
+        <label class="f" for="crFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
+        <input type="file" id="crFile" accept=".pdf,.docx,.pptx,.txt">
+        <p class="small" id="crFileMsg" style="min-height:16px"></p>
+        <label class="f" for="crTitle">Title</label>
+        <input type="text" id="crTitle" required>
+        <label class="f" for="crBody">Text (one blank line between paragraphs). Filled in automatically if you uploaded a file above</label>
+        <textarea id="crBody" style="min-height:160px" required></textarea>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" type="submit">Add reading</button>
+        </div>
+        <p class="small" id="newClassReadingMsg" style="margin-top:8px"></p>
+      </form>
+    </div>`;
+
+  document.getElementById('classDetailBack').addEventListener('click', loadClasses);
+  wireClassNameRename(cls);
+  wireClassReadingForm(cls.id);
+  loadReadingsInto(document.getElementById('classReadingList'), currentProfile.id, cls.id, 'No readings in this class yet. Add one below.');
+
+  if (progressRows && progressRows.length) {
+    el.querySelectorAll('.student-row').forEach(row => {
+      const openStudent = () => {
+        const r = progressRows.find(x => x.student_id === row.dataset.student);
+        if (r) renderStudentDetail(cls, r);
+      };
+      row.addEventListener('click', openStudent);
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openStudent(); } });
+    });
+  }
+}
+
+/* One student's own summary within this class -- the same counts from
+   the class's student list, just blown up into a bigger standalone view. */
+function renderStudentDetail(cls, r) {
+  const el = document.getElementById('classesPane');
+  el.innerHTML = `
+    <button class="ghost" id="studentDetailBack" type="button">&larr; ${escapeHtml(cls.name)}</button>
+    <h1>${escapeHtml(r.full_name || '(no name)')}</h1>
+    <p class="hint">Progress in ${escapeHtml(cls.name)}.</p>
+    <div class="stat-grid">
+      <div class="stat-tile"><div class="stat-num">${r.sessions_count}</div><div class="stat-label">Reading session${r.sessions_count === 1 ? '' : 's'}</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.resolved_count}</div><div class="stat-label">Cleared up</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.stuck_count}</div><div class="stat-label">Still stuck</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.open_count || 0}</div><div class="stat-label">In progress</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.checkins_count}</div><div class="stat-label">Check-in${r.checkins_count === 1 ? '' : 's'}</div></div>
+      <div class="stat-tile"><div class="stat-num">${r.checkins_lost_count || 0}</div><div class="stat-label">"I'm lost" check-ins</div></div>
+    </div>`;
+  document.getElementById('studentDetailBack').addEventListener('click', () => openClassDetail(cls.id));
+}
+
+/* Click the class name to rename it in place; Enter/blur saves, Escape cancels. */
+function wireClassNameRename(cls) {
+  const heading = document.getElementById('classNameHeading');
+  heading.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'class-name-input';
+    input.value = cls.name;
+    heading.replaceWith(input);
+    input.focus();
+    input.select();
+    let settled = false;
+    const commit = async () => {
+      if (settled) return;
+      settled = true;
+      const newName = input.value.trim();
+      if (!newName || newName === cls.name) { openClassDetail(cls.id); return; }
+      const { error } = await supa.from('classes').update({ name: newName }).eq('id', cls.id);
+      if (error) { showToast('Could not rename: ' + error.message, 'bug'); openClassDetail(cls.id); return; }
+      showToast('Class renamed.', 'ok');
+      openClassDetail(cls.id);
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { settled = true; openClassDetail(cls.id); }
+    });
+  });
+}
+
+function wireClassReadingForm(classId) {
+  document.getElementById('crFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const msg = document.getElementById('crFileMsg');
+    msg.style.color = 'var(--muted)';
+    msg.textContent = `Reading ${file.name}…`;
+    try {
+      const text = await extractTextFromFile(file);
+      document.getElementById('crBody').value = text;
+      const titleField = document.getElementById('crTitle');
+      if (!titleField.value.trim()) titleField.value = file.name.replace(/\.[^.]+$/, '');
+      msg.style.color = 'var(--ok)';
+      msg.textContent = `Loaded text from ${file.name}. Review it below, then click "Add reading".`;
+    } catch (err) {
+      msg.style.color = 'var(--bug)';
+      msg.textContent = err.message || 'Could not read that file.';
+    }
+  });
+
+  document.getElementById('newClassReadingForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('crTitle').value.trim();
+    const body = document.getElementById('crBody').value.trim();
+    const msg = document.getElementById('newClassReadingMsg');
+    if (!title || !body) return;
+    const { error } = await supa.from('readings').insert({ teacher_id: currentProfile.id, title, body, class_id: classId });
+    msg.textContent = error ? ('Could not save: ' + error.message) : 'Saved.';
+    if (!error) {
+      document.getElementById('crTitle').value = '';
+      document.getElementById('crBody').value = '';
+      loadReadingsInto(document.getElementById('classReadingList'), currentProfile.id, classId, 'No readings in this class yet. Add one below.');
+    }
+  });
 }
 
 async function startTeacherPage(profile) {
@@ -283,7 +518,7 @@ async function startTeacherPage(profile) {
     const body = document.getElementById('rBody').value.trim();
     const msg = document.getElementById('newReadingMsg');
     if (!title || !body) return;
-    const { error } = await supa.from('readings').insert({ teacher_id: profile.id, title, body });
+    const { error } = await supa.from('readings').insert({ teacher_id: profile.id, title, body, class_id: null });
     msg.textContent = error ? ('Could not save: ' + error.message) : 'Saved.';
     if (!error) {
       document.getElementById('rTitle').value = '';
@@ -295,14 +530,22 @@ async function startTeacherPage(profile) {
   await loadReadings(profile.id);
 }
 
+/* Dashboard's "general" readings: class_id is null, visible to every student. */
 async function loadReadings(teacherId) {
-  const list = document.getElementById('readingList');
+  await loadReadingsInto(document.getElementById('readingList'), teacherId, null, 'No readings yet. Add your first one below.');
+}
+
+/* Shared by the Dashboard's general-reading list and each class's own
+   reading list -- classId === null means "general" (class_id is null),
+   any other value scopes to that one class (class_id = classId). */
+async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
   list.innerHTML = '<p class="small">Loading...</p>';
 
-  const { data: readings, error } = await supa
-    .from('readings').select('*').eq('teacher_id', teacherId).order('created_at', { ascending: false });
-  if (error) { list.innerHTML = `<p class="small" style="color:var(--bug)">${error.message}</p>`; return; }
-  if (!readings.length) { list.innerHTML = '<p class="small">No readings yet. Add your first one below.</p>'; return; }
+  let query = supa.from('readings').select('*').eq('teacher_id', teacherId).order('created_at', { ascending: false });
+  query = classId ? query.eq('class_id', classId) : query.is('class_id', null);
+  const { data: readings, error } = await query;
+  if (error) { list.innerHTML = `<p class="small" style="color:var(--bug)">${escapeHtml(error.message)}</p>`; return; }
+  if (!readings.length) { list.innerHTML = `<p class="small">${escapeHtml(emptyMessage)}</p>`; return; }
 
   // For each reading, count sessions and how many debug spots are open / resolved / still "stuck".
   const cards = await Promise.all(readings.map(async (r) => {
@@ -347,7 +590,7 @@ async function loadReadings(teacherId) {
     if (!confirm('Delete this reading? Student sessions on it will be deleted too.')) return;
     const { error } = await supa.from('readings').delete().eq('id', card.dataset.reading);
     if (error) { alert('Could not delete: ' + error.message); return; }
-    loadReadings(currentProfile.id);
+    loadReadingsInto(list, teacherId, classId, emptyMessage);
   }));
 }
 
@@ -361,6 +604,15 @@ function escapeHtml(s) {
    just this page, that actually block a non-admin from calling it directly. */
 async function renderAdmin() {
   const el = document.getElementById('adminPane');
+  // Belt and suspenders: even if something let a non-admin reach this
+  // function, never run the fallback query below for them -- that
+  // fallback is a bare `profiles` select with no role filter, so it's
+  // only ever meant to run for a confirmed admin whose own admin_list_users()
+  // RPC call happened to fail (e.g. the migration not being run yet).
+  if (!currentProfile || currentProfile.role !== 'admin') {
+    el.innerHTML = '<h1>Admin</h1><p class="small" style="color:var(--bug)">You don\'t have access to this page.</p>';
+    return;
+  }
   el.innerHTML = '<h1>Admin</h1><p class="hint">Loading…</p>';
 
   const [{ data: rpcUsers, error: uErr }, { data: classes, error: cErr }] = await Promise.all([
@@ -420,21 +672,34 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
     <p class="hint">Every account and every class, across all teachers.</p>
 
     <h3 style="margin:22px 0 4px">Accounts (${(users || []).length})</h3>
-    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet &mdash; run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
+    ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet. Run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
     <div style="display:flex; flex-direction:column; gap:10px">${userRows || '<p class="small">No accounts found.</p>'}</div>
 
     <h3 style="margin:28px 0 10px">Classes (${(classes || []).length})</h3>
     <div style="display:flex; flex-direction:column; gap:10px">${classRows || '<p class="small">No classes created yet.</p>'}</div>`;
 
-  el.querySelectorAll('select[data-role-for]').forEach(sel => sel.addEventListener('change', async () => {
-    const id = sel.dataset.roleFor;
-    const newRole = sel.value;
-    sel.disabled = true;
-    const { error } = await supa.from('profiles').update({ role: newRole }).eq('id', id);
-    sel.disabled = false;
-    if (error) { showToast('Could not change role: ' + error.message, 'bug'); return; }
-    showToast('Role updated.', 'ok');
-  }));
+  el.querySelectorAll('select[data-role-for]').forEach(sel => {
+    const prevValue = sel.value; // so a cancelled admin grant snaps the dropdown back
+    sel.addEventListener('change', async () => {
+      const id = sel.dataset.roleFor;
+      const newRole = sel.value;
+      // Granting admin is the one change here that can't be undone by the
+      // person it happens to -- a plain instant dropdown had no guardrail
+      // at all, so a stray click could hand anyone full access.
+      if (newRole === 'admin' && !confirm(
+        `Make "${nameById[id] || 'this account'}" an admin?\n\nAdmins can view every account and class across all teachers, and change ` +
+        `anyone's role, including granting more admins. Only do this for someone you fully trust with that access.`
+      )) {
+        sel.value = prevValue;
+        return;
+      }
+      sel.disabled = true;
+      const { error } = await supa.from('profiles').update({ role: newRole }).eq('id', id);
+      sel.disabled = false;
+      if (error) { showToast('Could not change role: ' + error.message, 'bug'); sel.value = prevValue; return; }
+      showToast('Role updated.', 'ok');
+    });
+  });
 
   el.querySelectorAll('[data-act="delete-class"]').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('[data-class]');

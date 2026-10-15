@@ -32,7 +32,7 @@ import contextlib
 SEALION_MODEL_NAME = os.getenv("SEALION_MODEL", "aisingapore/Gemma-SEA-LION-v3-9B-IT")
 ADAPTER_PATH = os.getenv(
     "SEALION_ADAPTER",
-    str(Path(__file__).resolve().parent / "checkpoints" / "socratic-lora" / "best"),
+    str(Path(__file__).resolve().parent / "checkpoints" / "socratic-lora-v2" / "best"),
 )
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -162,13 +162,15 @@ class Turn(BaseModel):
     mode: Optional[str] = None 
 
 class Ask(BaseModel):
-    mode: str = "debug"            # "debug" (first hint), "followup", or "stuck"
+    mode: str = "debug"            # from the widget: "debug", "followup", "stuck" (button) or "giveup"
     problem: Optional[str] = None  # "vocab", "lost", "connect", or "why"
     passage: str = ""              # words selected
     paragraph: str = ""            # paragraph around it
     goal: Optional[str] = None     # reading goal
+    goal_hint: Optional[str] = None  # a word shared by the selection and the goal (widget's keyword check)
     message: Optional[str] = None  # student latest reply
     history: List[Turn] = []       # conversation history
+    response_language: Optional[str] = None  # saved Coach language setting: "en", "fil", or None to auto-detect
 
 COACH_RULES = """You are a warm, encouraging reading coach for Grade 7 students. 
 
@@ -195,21 +197,51 @@ _EN_REQUEST = re.compile(r"\b(in english|english please|english po|sa english|sa
 _FIL_REQUEST = re.compile(r"\b(in tagalog|in filipino|tagalog please|filipino please|sa tagalog|sa filipino|tagalog po)\b", re.I)
 _FIL_HINT = re.compile(r"\b(ang|ng|mga|sa|ay|na|hindi|ko|po|ito|siya|nila|kami|tayo|ba)\b", re.I)
 
+# Words that may surround a language request without making the message an actual answer.
+_REQUEST_FILLER = {
+    "please", "pls", "plz", "po", "naman", "lang", "paki", "pwede", "puwede", "can", "could", "you",
+    "speak", "talk", "reply", "answer", "explain", "say", "use", "in", "sa", "only", "again", "ulit",
+    "instead", "the", "language", "it", "that", "mag", "ka", "mo", "ba", "gusto", "ko", "sana", "ako",
+}
+
 def language_request(text):
+    """'en' / 'fil' only if the message is JUST a language request ("in english please",
+    "sa tagalog po"). An answer that mentions a language ("dusk sa tagalog ay takipsilim")
+    is not a request, so it does not switch the language or become a "repeat" turn."""
     if not text:
         return None
-    if _EN_REQUEST.search(text):
-        return "en"
-    if _FIL_REQUEST.search(text):
-        return "fil"
+    for lang, pattern in (("en", _EN_REQUEST), ("fil", _FIL_REQUEST)):
+        if pattern.search(text):
+            rest = pattern.sub(" ", text)
+            if all(w in _REQUEST_FILLER for w in re.findall(r"[a-z']+", rest.lower())):
+                return lang
+            return None
     return None
 
+_LANG_ALIASES = {
+    "en": "en", "eng": "en", "english": "en", "en-us": "en", "en-ph": "en",
+    "fil": "fil", "filipino": "fil", "tagalog": "fil", "tl": "fil", "fil-ph": "fil", "tl-ph": "fil",
+}
+
+def normalize_language(value):
+    """Map whatever the frontend sends ("en", "English", "tl", "auto", ...) to "en", "fil" or None."""
+    if not value:
+        return None
+    return _LANG_ALIASES.get(str(value).strip().lower())
+
 def pick_language(ask):
+    # 1. A request typed in this thread wins ("in english please"). History is per debug
+    #    thread, so the override lasts for this passage and the saved setting returns after.
     texts = [t.text for t in ask.history if t.role == "student"] + [ask.message or ""]
     for text in reversed(texts):
         lang = language_request(text)
         if lang:
             return lang
+    # 2. The saved setting from the Coach language control.
+    saved = normalize_language(ask.response_language)
+    if saved:
+        return saved
+    # 3. Fallback: detect from the passage.
     sample = f"{ask.passage} {ask.paragraph}"
     return "fil" if len(_FIL_HINT.findall(sample)) >= 2 else "en"
 
@@ -219,7 +251,7 @@ def stuck_level(ask):
 
 _PROMPT_LEAK = re.compile(
     r"(<start_of_turn>|<end_of_turn>|^\s*(user|model|assistant)\s*$|Context paragraph:|"
-    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal:)",
+    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal( \(the student's own words\))?:)",
     re.I | re.M,
 )
  
@@ -259,10 +291,33 @@ _QUESTION_BY_PROBLEM = {
     "why":     "ONE simple question to look for an earlier clue in the text.",
 }
 
+def _full_explanation(p):
+    return (f"The student has been stuck several times. Now explain \"{p}\" clearly and simply using "
+            f"the context, with one everyday example. End by asking them to say it in their own words.")
+
+def goal_instruction(ask):
+    """How strongly this turn should point at the student's reading goal.
+
+    Only when the selection shares a word with the goal (goal_hint) is the link stated
+    outright; otherwise the coach may mention the goal only if the link is real, so it
+    does not force a connection onto an unrelated word."""
+    if not ask.goal or ask.mode in ("repeat", "stuck"):
+        return ""
+    if ask.mode == "success":
+        return (" Then add ONE short sentence on how understanding this helps with their reading goal, "
+                "if it does.")
+    if ask.goal_hint:
+        return (f" This part is related to their reading goal (it mentions \"{ask.goal_hint}\"), so "
+                f"connect your question to that goal.")
+    return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
+            "otherwise do not mention the goal.")
+
 def mode_instruction(ask):
     p = ask.passage or "this part"
     question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
- 
+    return _mode_instruction(ask, p, question) + goal_instruction(ask)
+
+def _mode_instruction(ask, p, question):
     if ask.mode == "success":
         return (f"The student has understood \"{p}\". Confirm they are right in your own words, "
                 f"restate the meaning in ONE short sentence using the context, and tell them they "
@@ -276,8 +331,9 @@ def mode_instruction(ask):
         if level == 2:
             return (f"The student is still stuck. Do NOT give the full answer. Explain ONE piece of the "
                     f"idea behind \"{p}\" using the context, then ask the student to finish the idea.")
-        return (f"The student has been stuck several times. Now explain \"{p}\" clearly and simply using "
-                f"the context, with one everyday example. End by asking them to say it in their own words.")
+        return _full_explanation(p)
+    if ask.mode == "giveup":
+        return _full_explanation(p)
     if ask.mode == "repeat":
         return "The student asked you to change language. Repeat your last question in that language. Nothing else."
     if ask.mode == "followup":
@@ -289,7 +345,7 @@ def build_hint_prompt(ask, lang):
     passage = ask.passage or "this part"
     lines = []
     if ask.goal:
-        lines.append(f"Reading goal: {ask.goal}")
+        lines.append(f"Reading goal (the student's own words): \"{ask.goal[:200]}\"")
     if ask.paragraph:
         lines.append(f"Context paragraph: {ask.paragraph[:600]}")
     else:
@@ -875,7 +931,8 @@ Reply with the question only."""
 
 
 def generate_checkin(ask: CheckinAsk) -> str:
-    prompt = f"Text context: {ask.text[:3000]}\nGenerate a single checking question."
+    goal = f"Student's reading goal: \"{ask.goal[:200]}\"\n" if ask.goal else ""
+    prompt = f"{goal}Text context: {ask.text[:3000]}\nGenerate a single checking question."
     return ask_llama(CHECKIN_RULES, prompt, history=None, temperature=0.8, max_tokens=60)
 
 
@@ -898,25 +955,33 @@ def _fail(what: str, e: Exception):
 @app.post("/partner")
 def partner(ask: Ask):
     try:
-        if not ask.message:
+        requested = ask.mode
+        if requested == "stuck":
+            ask.mode = "stuck"    # the "Still stuck" button: an explicit signal, sent with no message
+        elif not ask.message:
             ask.mode = "debug"
         elif language_request(ask.message) and len(ask.message.split()) <= 5:
             ask.mode = "repeat"   # "in english please" is not an answer
         else:
             ask.mode = classify_intent(ask.message, target_passage=ask.passage,
                                        last_coach=last_coach_line(ask))
+            # The widget sends "giveup" after a few unresolved follow-ups. Explain fully
+            # then, unless the student just showed they understood.
+            if requested == "giveup" and ask.mode != "success":
+                ask.mode = "giveup"
  
         reply_text = generate_hint(ask)
  
         print("\n" + "-" * 40)
         stuck_info = f" (level {stuck_level(ask)})" if ask.mode == "stuck" else ""
-        print(f"📥 [API REQUEST] /partner | Mode: {ask.mode}{stuck_info} | Problem: {ask.problem}")
-        print(f"   Target: {ask.passage} | Student said: {ask.message!r} | History turns: {len(ask.history)}")
-        print(f"📤 [API RESPONSE]: {reply_text}")
+        print(f"[API REQUEST] /partner | Mode: {ask.mode}{stuck_info} | Problem: {ask.problem}")
+        print(f"   Target: {ask.passage} | Student said: {ask.message!r} | History turns: {len(ask.history)}"
+              f" | Language: {pick_language(ask)} (setting: {ask.response_language!r})")
+        print(f"[API RESPONSE]: {reply_text}")
         print("-" * 40)
         return {"reply": reply_text, "mode": ask.mode}
     except Exception as e:
-        print("❌ Error in /partner:", repr(e))
+        print("Error in /partner:", repr(e))
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/quiz")
