@@ -163,7 +163,8 @@ class Turn(BaseModel):
 
 class Ask(BaseModel):
     mode: str = "debug"            # from the widget: "debug", "followup", "stuck" (button) or "giveup"
-    problem: Optional[str] = None  # "vocab", "lost", "connect", or "why"
+    problem: Optional[str] = None  # "vocab", "lost", "connect", "why", or "other" (typed by the student)
+    problem_text: Optional[str] = None  # the student's own description, set when problem == "other"
     passage: str = ""              # words selected
     paragraph: str = ""            # paragraph around it
     goal: Optional[str] = None     # reading goal
@@ -312,10 +313,28 @@ def goal_instruction(ask):
     return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
             "otherwise do not mention the goal.")
 
+def problem_said(ask):
+    """The student's own description of the trouble, or None (only for problem "other")."""
+    if ask.problem == "other" and ask.problem_text and ask.problem_text.strip():
+        return ask.problem_text.strip()[:200]
+    return None
+
 def mode_instruction(ask):
     p = ask.passage or "this part"
-    question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
-    return _mode_instruction(ask, p, question) + goal_instruction(ask)
+    said = problem_said(ask)
+    if said:
+        # An f-string, not .format(): the text comes from a student, and a "{" in it
+        # would make .format() raise and turn the request into a 502.
+        question = (f"ONE short, simple question aimed at exactly the trouble they described "
+                    f"(\"{said}\"), not at some other difficulty you notice in the passage.")
+    else:
+        question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
+    text = _mode_instruction(ask, p, question)
+    # Stuck and give-up turns write their own instruction and never use `question`,
+    # so carry the description into them explicitly.
+    if said and ask.mode in ("stuck", "giveup"):
+        text += f" They had described the trouble as: \"{said}\"."
+    return text + goal_instruction(ask)
 
 def _mode_instruction(ask, p, question):
     if ask.mode == "success":

@@ -181,6 +181,15 @@ async function dbUpdateDebugStatus(t) {
   const { error } = await supa.from('debug_events').update({ status: t.status }).eq('id', t.dbId);
   if (error) console.warn('Could not update the debug spot:', error.message);
 }
+/* Saves the actual back-and-forth for this debug thread -- needs
+   hint_transcript_migration.sql run once. Without it the column doesn't
+   exist and this just fails quietly, same as any other save error. */
+async function dbSaveTranscript(t) {
+  if (!t.dbId) return;
+  const transcript = t.msgs.filter(m => !m.typing).map(m => ({ from: m.from, text: m.text, demo: !!m.demo }));
+  const { error } = await supa.from('debug_events').update({ transcript }).eq('id', t.dbId);
+  if (error) console.warn('Could not save the hint transcript:', error.message);
+}
 async function dbInsertCheckin(prompt, level, answer) {
   const sid = await ensureSession(); if (!sid) return;
   const { error } = await supa.from('checkin_events').insert({ session_id: sid, prompt, level, answer });
@@ -625,6 +634,7 @@ async function markStuck(id) {
   const r = await askPartner(partnerPayload('stuck', t, stuckSays));
   t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   renderDebug();
+  dbSaveTranscript(t);
 }
 reader.addEventListener('click', e => {
   const m = e.target.closest('mark.dbg'); if (!m) return;
