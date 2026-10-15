@@ -1,10 +1,3 @@
-/* AUTH.JS -- signup, login, and figuring out if someone's a student,
-   teacher, or admin. Shared by index.html and teacher.html.
-
-   To use on a page: have a <div id="authOverlay"> and an id="appRoot"
-   for the protected content, load config.js + the Supabase script +
-   this file, then call initAuth({ allow: ['student'], onReady: user => {...} }).
-   allow = which roles may use this page; others get redirected. */
 
 const supa = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -12,9 +5,7 @@ function escapeAuthHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-/* "Remember my email" -- never the password, just the email, so a
-   shared classroom computer can offer quick-pick buttons instead of
-   everyone retyping their address every time. */
+/* "Remember my email" -- never the password,  */
 const RECENT_LOGINS_KEY = 'recentLogins';
 function getRecentLogins() {
   try { return JSON.parse(localStorage.getItem(RECENT_LOGINS_KEY) || '[]'); } catch (e) { return []; }
