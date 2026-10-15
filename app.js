@@ -1103,7 +1103,7 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
     const cls = opts.demo ? 'lib-card demo' : 'lib-card';
     const attr = opts.demo ? `data-demo="${r.id}"` : `data-id="${r.id}"`;
     return `<button class="${cls}" ${attr}>
-      ${opts.demo ? '<span class="lib-card-badge">Built-in</span>' : ''}
+      ${opts.demo || opts.builtIn ? '<span class="lib-card-badge">Built-in</span>' : ''}
       <span class="lib-card-icon">${iconSvg}</span>
       <span class="lib-card-title">${esc(r.title)}</span>
       <span class="lib-card-snippet">${esc(snippet)}…</span>
@@ -1128,9 +1128,28 @@ async function getVisibleReadings() {
     .from('class_members').select('class_id').eq('student_id', state.user.id);
   if (memErr) return { data: null, error: memErr };
   const classIds = (memberships || []).map(m => m.class_id);
-  let query = supa.from('readings').select('id, title, body, created_at').order('created_at', { ascending: false });
+  let query = supa.from('readings').select('id, title, body, created_at')
+    .not('teacher_id', 'is', null)   // built-in readings are listed separately
+    .order('created_at', { ascending: false });
   query = classIds.length ? query.or(`class_id.is.null,class_id.in.(${classIds.join(',')})`) : query.is('class_id', null);
   return await query;
+}
+
+/* The built-in practice readings, from the database rather than the copies
+   below. Reading one from the database means the session is saved with a real
+   reading_id, so the work can be traced to a text and a teacher can see it.
+   If the database cannot be reached, the hardcoded copies are used instead
+   and everything still works, which is the whole point of keeping them.
+   Needs builtin_readings_migration.sql. */
+async function getBuiltInReadings() {
+  const { data, error } = await supa
+    .from('readings').select('id, title, body')
+    .is('teacher_id', null).order('created_at');
+  if (error || !data || !data.length) {
+    if (error) console.warn('Falling back to the built-in copies:', error.message);
+    return { rows: demoReadingObjs(), fromDb: false };
+  }
+  return { rows: data, fromDb: true };
 }
 
 $('#changeReadingBtn').addEventListener('click', () => showReadingPicker());
@@ -1142,6 +1161,7 @@ async function showReadingPicker() {
   picker.innerHTML = `<h1>Choose a reading</h1><p class="hint">Loading…</p>`;
 
   const { data: readings, error } = await getVisibleReadings();
+  const builtIn = await getBuiltInReadings();
 
   const teacherGrid = (!error && readings && readings.length)
     ? readingCardsHtml(readings, BOOK_ICON)
@@ -1152,7 +1172,7 @@ async function showReadingPicker() {
     <h1>Choose a reading</h1>
     <p class="hint">Pick a built-in practice text, something your teacher added, or paste your own.</p>
     <h3 style="margin:22px 0 0">Built-in practice readings</h3>
-    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true })}
+    ${readingCardsHtml(builtIn.rows, DEMO_READING_ICON, { demo: !builtIn.fromDb, builtIn: true })}
     <h3 style="margin:28px 0 0">From your classes</h3>
     ${teacherGrid}
     <div class="row" style="margin-top:16px">
@@ -1163,7 +1183,15 @@ async function showReadingPicker() {
     b.disabled = true;
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { picker.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
-    enterReader({ title: r.title, byline: 'Added by your teacher', bodyHtml: paragraphsToHtml(r.body), readingId: r.id });
+    // Both grids on this page render data-id cards, so the byline has to come
+    // from the row itself. A built-in reading has no teacher_id, and telling a
+    // student their teacher added it would be wrong.
+    enterReader({
+      title: r.title,
+      byline: r.teacher_id ? 'Added by your teacher' : 'Built-in practice text',
+      bodyHtml: paragraphsToHtml(r.body),
+      readingId: r.id
+    });
   }));
   $$('.lib-card[data-demo]', picker).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
@@ -1251,7 +1279,7 @@ async function renderQuizPicker() {
         <span class="quiz-row-cta">Start quiz &rarr;</span>
       </button>`).join('')}</div>` : ''}
     <h3 style="margin:22px 0 0">Built-in practice texts</h3>
-    ${readingCardsHtml(demoReadingObjs(), DEMO_READING_ICON, { demo: true, kind: 'quiz' })}
+    ${readingCardsHtml(builtIn.rows, DEMO_READING_ICON, { demo: !builtIn.fromDb, builtIn: true, kind: 'quiz' })}
     <h3 style="margin:28px 0 0">From your classes</h3>
     ${teacherGrid}
     <div class="row" style="margin-top:16px">

@@ -6,7 +6,7 @@
 <title>Reading Partner – Teacher</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Literata:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <style>
   .reading-card { background: var(--sheet); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 12px; }
@@ -108,6 +108,10 @@
               <p class="small" id="newReadingMsg" style="margin-top:8px"></p>
             </form>
           </div>
+
+          <h3 style="margin:30px 0 4px">Built-in readings</h3>
+          <p class="hint">Practice texts available to every student. Only an admin can change these, but you can make a quiz from one for any of your classes.</p>
+          <div id="builtInList"></div>
         </div>
       </section>
 
@@ -238,6 +242,9 @@ function classInsightsHtml(debugRows, checkinRows) {
 }
 
 async function loadClasses() {
+  // Leaving a class clears it, so a quiz started from the Dashboard asks which
+  // class it is for instead of quietly using the last one that was open.
+  currentClass = null;
   const el = document.getElementById('classesPane');
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
 
@@ -558,7 +565,12 @@ async function startTeacherPage(profile) {
 
 /* Dashboard's "general" readings: class_id is null, visible to every student. */
 async function loadReadings(teacherId) {
+  currentClass = null;   // same reason as in loadClasses()
   await loadReadingsInto(document.getElementById('readingList'), teacherId, null, 'No readings yet. Add your first one below.');
+  loadBuiltInReadings(document.getElementById('builtInList'), {
+    canManage: !!(currentProfile && currentProfile.role === 'admin'),
+    canQuiz: true   // this is a teacher's own dashboard, so there are classes to assign to
+  });
 }
 
 /* Shared by the Dashboard's general-reading list and each class's own
@@ -672,12 +684,33 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
   return d.questions;
 }
 
-function openQuizSettings(reading) {
+async function openQuizSettings(reading) {
   const dlg = document.getElementById('quizDlg');
+
+  // A reading opened from inside a class already has its class. One opened
+  // from the Dashboard, or a built-in reading, belongs to no class, so the
+  // dialog has to ask which class the quiz is being assigned to.
+  let classOptions = '';
+  if (!currentClass) {
+    const { data: classes } = await supa.from('classes')
+      .select('id, name').eq('teacher_id', currentProfile.id).order('name');
+    if (!classes || !classes.length) {
+      showToast('Make a class first. A quiz is always assigned to one.', 'bug');
+      return;
+    }
+    classOptions = `
+      <label class="f" for="qzClass">Assign to</label>
+      <select id="qzClass">${classes.map(c =>
+        `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>`;
+    dlg.dataset.classes = JSON.stringify(classes);
+  }
+
   dlg.innerHTML = `
     <form method="dialog">
       <h3 style="margin:0 0 4px">Make a quiz</h3>
       <p class="small" style="margin:0 0 14px">From &ldquo;${escapeHtml(reading.title)}&rdquo;. You see the questions before the class does.</p>
+
+      ${classOptions}
 
       <label class="f" for="qzTitle">Title</label>
       <input type="text" id="qzTitle" value="${escapeHtml(reading.title)}" required>
@@ -704,13 +737,28 @@ function openQuizSettings(reading) {
       <p class="small" style="margin:6px 0 0">The questions are written from the reading itself, so they come out in the reading's language. This setting controls the answer choices and the explanations.</p>
 
       <div class="row" style="margin-top:14px; justify-content:flex-end">
-        <button class="btn alt" value="cancel">Cancel</button>
-        <button class="btn" id="qzGo" value="ok">Generate</button>
+        <button class="btn alt" type="button" id="qzCancel">Cancel</button>
+        <button class="btn" id="qzGo" type="submit">Generate</button>
       </div>
     </form>`;
   dlg.showModal();
-  document.getElementById('qzGo').addEventListener('click', (e) => {
+  document.getElementById('qzCancel').addEventListener('click', () => dlg.close('cancel'));
+
+  // Listen on the form's submit rather than the Generate button's click.
+  // Cancel used to be the first submit button in the form, so pressing Enter
+  // in the title field submitted through it and quietly closed the dialog
+  // without ever generating anything.
+  dlg.querySelector('form').addEventListener('submit', (e) => {
     e.preventDefault();
+    const picker = document.getElementById('qzClass');
+    if (picker) {
+      // Everything downstream navigates back to currentClass, so set it here
+      // and the rest of the flow is identical to starting inside a class.
+      const chosen = JSON.parse(dlg.dataset.classes || '[]')
+        .find(c => c.id === picker.value);
+      if (!chosen) { showToast('Pick a class first.', 'bug'); return; }
+      currentClass = chosen;
+    }
     const settings = {
       title: document.getElementById('qzTitle').value.trim() || reading.title,
       instructions: document.getElementById('qzNote').value.trim(),
@@ -736,6 +784,160 @@ function classQuizAverage(rows) {
   const answered = (rows || []).reduce((t, r) => t + Number(r.quiz_answered || 0), 0);
   const correct  = (rows || []).reduce((t, r) => t + Number(r.quiz_correct  || 0), 0);
   return scorePercent(correct, answered);
+}
+
+/* ====================================================================
+   BUILT-IN READINGS
+
+   Practice texts that belong to no teacher and no class. Every signed-in
+   account can read them; only an admin can add, edit or remove one, which
+   the policies in builtin_readings_migration.sql enforce in the database
+   rather than only in this page.
+   ==================================================================== */
+
+/* opts.canManage adds the Delete button, opts.canQuiz adds "Make a quiz".
+   They are separate because an admin manages the texts but has no class to
+   assign a quiz to, and a quiz always belongs to one class. */
+async function loadBuiltInReadings(list, opts = {}) {
+  const canManage = !!opts.canManage, canQuiz = !!opts.canQuiz;
+  list.innerHTML = '<p class="small">Loading...</p>';
+  const { data: readings, error } = await supa
+    .from('readings').select('id, title, body, created_at')
+    .is('teacher_id', null).order('created_at');
+  if (error) {
+    const needs = /column .* does not exist|schema cache/i.test(error.message);
+    list.innerHTML = `<p class="small" style="color:var(--bug)">${escapeHtml(error.message)}${
+      needs ? ' Run builtin_readings_migration.sql in Supabase first.' : ''}</p>`;
+    return;
+  }
+  if (!readings.length) {
+    list.innerHTML = `<p class="small">No built-in readings yet.${
+      canManage ? ' Add one below.' : ' An admin adds these.'}</p>`;
+    return;
+  }
+
+  list.innerHTML = readings.map(r => `
+    <div class="reading-card" data-reading="${r.id}">
+      <div class="row-top">
+        <div>
+          <h3>${escapeHtml(r.title)}</h3>
+          <p class="meta">Built-in &middot; available to every student</p>
+        </div>
+        <div class="row" style="gap:10px">
+          ${canQuiz ? '<button class="tiny" type="button" data-act="quiz">Make a quiz</button>' : ''}
+          <button class="tiny" type="button" data-act="preview">Show text</button>
+          ${canManage ? '<button class="tiny danger" type="button" data-act="delete">Delete</button>' : ''}
+        </div>
+      </div>
+      <div class="preview" data-body="${escapeHtml(r.body)}"></div>
+    </div>`).join('');
+
+  list.querySelectorAll('[data-act="preview"]').forEach(btn => btn.addEventListener('click', () => {
+    const box = btn.closest('.reading-card').querySelector('.preview');
+    const open = box.classList.toggle('open');
+    btn.textContent = open ? 'Hide text' : 'Show text';
+    if (open && !box.innerHTML) {
+      box.innerHTML = box.dataset.body.split(/\n\s*\n/).map(p => `<p>${escapeHtml(p)}</p>`).join('');
+    }
+  }));
+
+  list.querySelectorAll('[data-act="quiz"]').forEach(btn => btn.addEventListener('click', () => {
+    const card = btn.closest('.reading-card');
+    const reading = readings.find(r => r.id === card.dataset.reading);
+    // A built-in reading belongs to no class, so the dialog has to ask which
+    // class the quiz is for.
+    if (reading) openQuizSettings(reading);
+  }));
+
+  if (!canManage) return;
+  list.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+    const card = btn.closest('.reading-card');
+    const id = card.dataset.reading;
+
+    // sessions.reading_id and quizzes.reading_id are both "on delete set
+    // null", so deleting the text does not delete the work done on it. The
+    // rows stay and lose the link to the text instead, which means a reading
+    // session that can no longer be traced to any passage. Say so, with the
+    // real numbers, because that is the part that cannot be undone.
+    const [{ count: sessionCount }, { count: quizCount }] = await Promise.all([
+      supa.from('sessions').select('id', { count: 'exact', head: true }).eq('reading_id', id),
+      supa.from('quizzes').select('id', { count: 'exact', head: true }).eq('reading_id', id)
+    ]);
+
+    let warning = 'Delete this built-in reading? Every student loses access to it.';
+    if (sessionCount || quizCount) {
+      warning += '\n\n';
+      if (sessionCount) {
+        warning += sessionCount + ' reading session' + (sessionCount === 1 ? '' : 's')
+                 + ' already recorded on this text will be kept but will no longer say '
+                 + 'which text they were about. That cannot be undone.\n';
+      }
+      if (quizCount) {
+        warning += quizCount + ' assigned quiz' + (quizCount === 1 ? '' : 'zes')
+                 + ' made from it will keep working but lose the link to the passage.\n';
+      }
+      warning += '\nDelete anyway?';
+    } else if (sessionCount === null) {
+      // The count came back empty, which usually means this account cannot
+      // read sessions. Do not claim there are none.
+      warning += '\n\nAny sessions already recorded on this text will be kept but '
+               + 'will no longer say which text they were about.\n\nDelete anyway?';
+    }
+    if (!confirm(warning)) return;
+
+    const { error: delErr } = await supa.from('readings').delete().eq('id', id);
+    if (delErr) { showToast('Could not delete: ' + delErr.message, 'bug'); return; }
+    showToast('Built-in reading deleted.', 'ok');
+    loadBuiltInReadings(list, opts);
+  }));
+}
+
+/* The admin's add form. Teachers never see this: the button is not rendered
+   for them, and the database would refuse the insert even if it were. */
+function wireBuiltInForm() {
+  const form = document.getElementById('newBuiltInForm');
+  if (!form) return;
+  const msg = document.getElementById('newBuiltInMsg');
+
+  const file = document.getElementById('biFile');
+  if (file) file.addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const fileMsg = document.getElementById('biFileMsg');
+    fileMsg.textContent = 'Reading the file...';
+    try {
+      const text = await extractTextFromFile(f);
+      document.getElementById('biBody').value = text;
+      if (!document.getElementById('biTitle').value.trim()) {
+        document.getElementById('biTitle').value = f.name.replace(/\.[^.]+$/, '');
+      }
+      fileMsg.textContent = `Loaded ${text.split(/\s+/).length} words.`;
+    } catch (err) {
+      fileMsg.textContent = err.message;
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('biTitle').value.trim();
+    const body = document.getElementById('biBody').value.trim();
+    if (!title || !body) { msg.textContent = 'A title and some text are both needed.'; return; }
+    msg.textContent = 'Saving...';
+    // teacher_id and class_id stay null: that is what makes it built-in.
+    const { error } = await supa.from('readings')
+      .insert({ teacher_id: null, class_id: null, title, body });
+    if (error) {
+      msg.textContent = /row-level security/i.test(error.message)
+        ? 'The database refused this. Only an admin can add a built-in reading.'
+        : 'Could not save: ' + error.message;
+      return;
+    }
+    msg.textContent = '';
+    document.getElementById('biTitle').value = '';
+    document.getElementById('biBody').value = '';
+    const fm = document.getElementById('biFileMsg'); if (fm) fm.textContent = '';
+    showToast('Built-in reading added.', 'ok');
+    loadBuiltInReadings(document.getElementById('adminBuiltInList'), { canManage: true, canQuiz: false });
+  });
 }
 
 function quizBackLink() {
@@ -777,6 +979,7 @@ function renderQuizReview(reading, settings, questions) {
     ${quizBackLink()}
     <h1>${escapeHtml(settings.title)}</h1>
     <p class="hint">Check these before the class sees them. Edit the wording, change which answer is correct, or remove any that do not work. Nothing is visible to students until you assign it.</p>
+    ${questions.length < settings.n ? `<p class="small" style="color:var(--warn)">You asked for ${settings.n} questions and the backend returned ${questions.length}. Either it could not write that many from this text, or it is still capped at a lower number. Generate again, or assign these.</p>` : ''}
     <div id="qzList"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn" id="qzAssign" type="button">Assign to ${escapeHtml(currentClass.name)}</button>
@@ -1129,8 +1332,31 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
     ${hasEmails ? '' : `<p class="small" style="margin:0 0 10px; color:var(--warn)">Email addresses aren't shown here yet. Run admin_emails_migration.sql in Supabase to turn that on.${emailError ? ` (${escapeHtml(emailError)})` : ''}</p>`}
     <div style="display:flex; flex-direction:column; gap:10px">${userRows || '<p class="small">No accounts found.</p>'}</div>
 
+    <h3 style="margin:28px 0 4px">Built-in readings</h3>
+    <p class="hint">Practice texts every student can open, belonging to no teacher and no class.</p>
+    <div id="adminBuiltInList"></div>
+    <div class="new-reading">
+      <h3 style="margin:0 0 10px">Add a built-in reading</h3>
+      <form id="newBuiltInForm">
+        <label class="f" for="biFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
+        <input type="file" id="biFile" accept=".pdf,.docx,.pptx,.txt">
+        <p class="small" id="biFileMsg" style="min-height:16px"></p>
+        <label class="f" for="biTitle">Title</label>
+        <input type="text" id="biTitle" required>
+        <label class="f" for="biBody">Text (one blank line between paragraphs). Filled in automatically if you uploaded a file above</label>
+        <textarea id="biBody" style="min-height:160px" required></textarea>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" type="submit">Add built-in reading</button>
+        </div>
+        <p class="small" id="newBuiltInMsg" style="margin-top:8px"></p>
+      </form>
+    </div>
+
     <h3 style="margin:28px 0 10px">Classes (${(classes || []).length})</h3>
     <div style="display:flex; flex-direction:column; gap:10px">${classRows || '<p class="small">No classes created yet.</p>'}</div>`;
+
+  loadBuiltInReadings(document.getElementById('adminBuiltInList'), { canManage: true, canQuiz: false });
+  wireBuiltInForm();
 
   el.querySelectorAll('select[data-role-for]').forEach(sel => {
     const prevValue = sel.value; // so a cancelled admin grant snaps the dropdown back
