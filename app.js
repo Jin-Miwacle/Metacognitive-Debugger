@@ -1393,6 +1393,7 @@ async function renderQuizPicker() {
   const { data: readings, error } = await getVisibleReadings();
 
   const assigned = await getAssignedQuizzes();
+  const builtIn = await getBuiltInReadings();
 
   const teacherGrid = (!error && readings && readings.length)
     ? readingCardsHtml(readings, QUIZ_ICON)
