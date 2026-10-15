@@ -254,6 +254,14 @@ async function callBackend(path, body) {
   return null;
 }
 
+/* The backend reports which kind of turn it decided this was (debug,
+   followup, stuck, success, repeat) alongside the reply. That has to be
+   kept and sent back with the history: the backend works out how stuck a
+   student is by counting how many earlier coach turns were "stuck", so if
+   the history arrives without it the count is always zero, the escalation
+   stays on its first rung, and a student who keeps saying "I don't know"
+   is asked an easier question forever instead of eventually being given
+   the explanation. */
 async function askPartner(payload) {
   const d = await callBackend('/partner', payload);
   if (d && d.reply) return { reply: d.reply, mode: d.mode || null, demo: false };
@@ -263,7 +271,9 @@ async function askPartner(payload) {
   else if (payload.mode === 'giveup') reply = pick(DEMO_REPLIES.giveup);
   else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
   else reply = pick(DEMO_REPLIES.followup);
-  return { reply, demo: true };
+  // Offline replies carry the mode the frontend asked for, so the ladder
+  // still behaves sensibly when the backend is unreachable.
+  return { reply, mode: payload.mode || null, demo: true };
 }
 
 function partnerPayload(mode, t, message) {
@@ -274,11 +284,13 @@ function partnerPayload(mode, t, message) {
     // 'auto' means let the backend detect the passage's language itself;
     // anything else is an explicit override from the Progress tab toggle.
     response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage,
-    // The backend counts earlier coach turns with mode "stuck" to pick the hint level,
-    // so each coach turn carries the mode the backend returned for it.
-    history: t.msgs.filter(m => !m.typing).map(m => m.from === 'you'
-      ? { role: 'student', text: m.text }
-      : { role: 'coach', text: m.text, mode: m.mode || null })
+    history: t.msgs.filter(m => !m.typing).map(m => ({
+      role: m.from === 'you' ? 'student' : 'coach',
+      text: m.text,
+      // the backend counts coach turns with mode "stuck" to decide how
+      // much help to give next, so this has to survive the round trip
+      mode: m.mode || null
+    }))
   };
 }
 
@@ -487,7 +499,7 @@ function startDebug(problem) {
   dbInsertDebugEvent(t);
   renderDebug();
   askPartner(partnerPayload('debug', t))
-    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }]; renderDebug(); });
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }]; renderDebug(); dbSaveTranscript(t); });
 }
 function wrapRange(range, id) {
   const mark = document.createElement('mark');
@@ -525,7 +537,16 @@ async function markStuck(id) {
   if (t.mark) t.mark.classList.add('stuck');
   logEvent('debug_stuck', { id });
   dbUpdateDebugStatus(t);
-  const r = await askPartner(partnerPayload('stuck', t));
+  // Pressing "Still stuck" has to reach the backend as something the
+  // student said. The backend decides what kind of turn this is from
+  // ask.message, and its first branch is "no message means a fresh first
+  // hint" -- so with an empty message this button produced an opening
+  // hint rather than the escalation it exists for. Recording it as a
+  // student line also keeps the saved transcript faithful, which matters
+  // because that transcript is evaluation data.
+  const stuckSays = "I'm still stuck.";
+  t.msgs.push({ from: 'you', text: stuckSays });
+  const r = await askPartner(partnerPayload('stuck', t, stuckSays));
   t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   renderDebug();
 }
@@ -549,7 +570,8 @@ async function fireCheckin() {
     goal: state.goal && state.goal.text,
     text: reader.innerText.trim().slice(0, 6000),
     struggles: state.threads.map(t => t.text).slice(-5),
-    previous: c.shown.slice(-5)
+    previous: c.shown.slice(-5),
+    response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage
   });
   let prompt, source;
   if (d && d.prompt) { prompt = d.prompt; source = 'ai'; }
