@@ -62,18 +62,22 @@ model.generation_config.max_length = None
 print("SEALION Model loaded successfully!")
 
 # Load T5 Model
-# T5_MODEL_NAME = "valhalla/t5-base-qg-hl"
+T5_MODEL_NAME = "Aiken1016/MT5_Final_Model"
 
-# print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
+print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
 
-# qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
-# qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+# The model was saved with transformers 5.x, which writes extra_special_tokens as a list;
+# 4.x expects a dict and crashes on load. Passing an empty dict works on both.
+qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
 
-# qg_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# qg_model.to(qg_device)
-# qg_model.eval()
+# CPU by default: the mT5 is 2.3 GB in fp32, and next to the 4-bit 9B model (~6.5 GB)
+# it would not fit in 8 GB of VRAM. Set QG_DEVICE=cuda to try the GPU anyway.
+qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
+qg_model.to(qg_device)
+qg_model.eval()
 
-# print("T5 question-generation model loaded successfully!")
+print("T5 question-generation model loaded successfully!")
 
 app = FastAPI(title="Reading Partner backend")
 
@@ -540,37 +544,37 @@ Passage:
 
         prompt = f"generate question: {highlighted}"
 
-        # inputs = qg_tokenizer(
-        #     prompt,
-        #     return_tensors="pt",
-        #     truncation=True,
-        #     max_length=512
-        # )
-        # inputs = {key: value.to(qg_device) for key, value in inputs.items()}
+        inputs = qg_tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=512
+        )
+        inputs = {key: value.to(qg_device) for key, value in inputs.items()}
 
-        # with torch.inference_mode():
-        #     outputs = qg_model.generate(
-        #         **inputs,
-        #         max_new_tokens=64,
-        #         num_beams=4
-        #     )
+        with torch.inference_mode():
+            outputs = qg_model.generate(
+                **inputs,
+                max_new_tokens=64,
+                num_beams=4
+            )
 
-        # question = qg_tokenizer.decode(
-        #     outputs[0],
-        #     skip_special_tokens=True
-        # ).strip()
+        question = qg_tokenizer.decode(
+            outputs[0],
+            skip_special_tokens=True
+        ).strip()
 
-        # if not question or question.lower() in used_questions:
-        #     continue
+        if not question or question.lower() in used_questions:
+            continue
 
-        # used_answers.add(exact_answer.lower())
-        # used_questions.add(question.lower())
+        used_answers.add(exact_answer.lower())
+        used_questions.add(question.lower())
 
-        # generated.append({
-        #     "kind": kind,
-        #     "q": question,
-        #     "correct_text": exact_answer
-        # })
+        generated.append({
+            "kind": kind,
+            "q": question,
+            "correct_text": exact_answer
+        })
 
     if not generated:
         raise RuntimeError(
