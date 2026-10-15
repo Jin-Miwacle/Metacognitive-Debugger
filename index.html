@@ -132,14 +132,17 @@
   <form method="dialog">
     <h3 style="margin:0 0 4px">Use your own text</h3>
     <p class="small" style="margin:0 0 10px">Upload a file, or paste a passage directly.</p>
+    <label class="f" for="pasteTitle">What is this text called</label>
+    <input type="text" id="pasteTitle" placeholder="e.g. Science reviewer, chapter 4" maxlength="120">
+    <p class="small" style="margin:4px 0 0">This is the name you will see in History later. Uploading a file fills it in from the file name.</p>
     <label class="f" for="pasteFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
     <input type="file" id="pasteFile" accept=".pdf,.docx,.pptx,.txt">
     <p class="small" id="pasteFileMsg" style="min-height:16px"></p>
     <label class="f" for="pasteText">Or paste text directly (separate paragraphs with a blank line)</label>
     <textarea id="pasteText" placeholder="Paste your reading here"></textarea>
     <div class="row" style="margin-top:12px; justify-content:flex-end">
-      <button class="btn alt" value="cancel">Cancel</button>
-      <button class="btn" id="pasteOk" value="ok">Load text</button>
+      <button class="btn alt" type="button" id="pasteCancel">Cancel</button>
+      <button class="btn" id="pasteOk" type="submit">Load text</button>
     </div>
   </form>
 </dialog>

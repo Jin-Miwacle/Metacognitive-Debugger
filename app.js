@@ -95,6 +95,7 @@ const state = {
   log: [],
   user: null,                  // { id, role, full_name } once logged in
   reading: { id: null },       // the teacher reading this session is on (null = demo/pasted text)
+  pastedTitle: null,           // what the student called their own text, shown in History
   session: { id: null }        // the row in the "sessions" table for this reading attempt
 };
 function logEvent(type, data = {}) {
@@ -182,6 +183,14 @@ function renderSaveWarning() {
   box.title = saveHealth.last;
 }
 
+/* True when the database refused a write because a column a migration adds
+   is not there yet, as opposed to a real failure. Lets a save drop the new
+   field and go through rather than losing the whole row. */
+function isMissingColumn(error, column) {
+  const m = (error && error.message) || '';
+  return new RegExp("column .*" + column + ".* does not exist|'" + column + "' column|schema cache", 'i').test(m);
+}
+
 /* Called instead of a bare console.warn wherever a write can fail. */
 function noteSaveFailure(what, error) {
   const message = (error && error.message) || String(error || 'unknown error');
@@ -207,12 +216,25 @@ function noteOfflineFallback() {
 async function ensureSession() {
   if (state.session.id) return state.session.id;
   if (!state.user) return null;
-  const { data, error } = await supa.from('sessions').insert({
+  const row = {
     student_id: state.user.id,
     reading_id: state.reading.id,
     goal: state.goal ? state.goal.text : null,
     confidence: state.goal ? state.goal.confidence : null
-  }).select('id').single();
+  };
+  // Only pasted text carries a title of its own. Sent separately so the
+  // retry below can drop it without touching anything else.
+  if (!state.reading.id && state.pastedTitle) row.title = state.pastedTitle;
+
+  let { data, error } = await supa.from('sessions').insert(row).select('id').single();
+  if (error && row.title && isMissingColumn(error, 'title')) {
+    // session_title_migration.sql has not been run. Losing the title is a
+    // small thing; losing the session would take the goal, every flagged
+    // passage and every check-in with it, so save it without the title.
+    delete row.title;
+    ({ data, error } = await supa.from('sessions').insert(row).select('id').single());
+    console.warn('Saved this session without its title. Run session_title_migration.sql to keep names for pasted texts.');
+  }
   if (error) { noteSaveFailure('the reading session', error); return null; }
   state.session.id = data.id;
   return data.id;
@@ -705,7 +727,7 @@ reader.addEventListener('click', e => {
 
 /* ---- Check-in tab + floating popup ---- */
 function startCheckins() {
-  const c = state.checkin; c.on = true; c.nextAt = Date.now() + c.everySec * 1000;
+  const c = state.checkin; c.on = true; c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
 }
 async function fireCheckin() {
   const c = state.checkin;
@@ -791,6 +813,7 @@ function wireCheckinCard(box, onAfter) {
     c.responses.push({ level, prompt: c.pending, answer: answerText });
     logEvent('checkin_response', { level, prompt: c.pending, answer: answerText });
     dbInsertCheckin(c.pending, level, answerText);
+    nudgeSupport(level === 'clear' ? -1 : level === 'fuzzy' ? 1 : 2);
     c.pending = null;
     if (c.on) c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
     if (currentTab() === 'monitor') renderCheckin(); else updateBadges();
@@ -915,9 +938,11 @@ function resetSession() {
   Object.assign(state, {
     goal: null, threads: [], pending: null, selectionNote: '',
     session: { id: null },   // a new reading means a new database session
+    pastedTitle: null,
     startedAt: Date.now(), log: []
   });
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
+  Object.assign(state.support, { score: 0, level: 'steady' });
   $('#goalLine').textContent = 'No goal set yet';
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
@@ -943,7 +968,18 @@ function paragraphsToHtml(raw) {
 /* ---------- Use your own text: one dialog, shared by the Readings and
    Quizzes pickers. pasteTarget says which one is currently open. ---------- */
 let pasteTarget = 'reader';
-function openPasteDialog(target) { pasteTarget = target; $('#pasteFileMsg').textContent = ''; $('#pasteDlg').showModal(); }
+function openPasteDialog(target) {
+  pasteTarget = target;
+  $('#pasteFileMsg').textContent = '';
+  $('#pasteDlg').showModal();
+}
+
+/* The name the student gave their own text. Kept on state so the session row,
+   the reader heading and History all show the same thing. */
+function pastedTitleOrDefault() {
+  const typed = ($('#pasteTitle') ? $('#pasteTitle').value : '').trim();
+  return typed.slice(0, 120) || 'Your text';
+}
 $('#pasteBtn').addEventListener('click', () => openPasteDialog('reader'));
 
 $('#pasteFile').addEventListener('change', async (e) => {
@@ -956,6 +992,12 @@ $('#pasteFile').addEventListener('change', async (e) => {
   try {
     const text = await extractTextFromFile(file);
     $('#pasteText').value = text;
+    // Only when they have not named it themselves, so an upload never
+    // overwrites a title they typed on purpose.
+    const titleBox = $('#pasteTitle');
+    if (titleBox && !titleBox.value.trim()) {
+      titleBox.value = file.name.replace(/\.[^.]+$/, '').slice(0, 120);
+    }
     msg.style.color = 'var(--ok)';
     msg.textContent = `Loaded text from ${file.name}. Review it below, then click "Load text".`;
   } catch (err) {
@@ -963,14 +1005,29 @@ $('#pasteFile').addEventListener('change', async (e) => {
     msg.textContent = err.message || 'Could not read that file.';
   }
 });
-$('#pasteOk').addEventListener('click', () => {
+/* Listen on the form's submit rather than the button's click. Cancel used to
+   be the first submit button in this form, so once the dialog gained a text
+   field, pressing Enter in it submitted through Cancel and quietly closed
+   everything without loading the text. Submit covers Enter and the button
+   both; Cancel is now an ordinary button that only closes. */
+$('#pasteCancel').addEventListener('click', () => $('#pasteDlg').close('cancel'));
+$('#pasteDlg').querySelector('form').addEventListener('submit', (e) => {
+  e.preventDefault();
   const raw = $('#pasteText').value.trim();
-  if (!raw) return;
+  if (!raw) {
+    // Nothing to load. Say so rather than closing on an empty dialog.
+    $('#pasteFileMsg').style.color = 'var(--bug)';
+    $('#pasteFileMsg').textContent = 'Paste some text or upload a file first.';
+    return;
+  }
+  const title = pastedTitleOrDefault();
   $('#pasteText').value = '';
+  if ($('#pasteTitle')) $('#pasteTitle').value = '';
+  $('#pasteDlg').close('ok');
   if (pasteTarget === 'reader') {
-    enterReader({ title: 'Your text', byline: 'Pasted passage', bodyHtml: paragraphsToHtml(raw), readingId: null });
+    enterReader({ title, byline: 'Your own text', bodyHtml: paragraphsToHtml(raw), readingId: null });
   } else {
-    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: true, title: 'Your text', text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
+    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: true, title, text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
     renderQuizWorkspace();
   }
 });
@@ -1083,11 +1140,23 @@ async function renderHistoryView() {
   const el = $('#historyPane');
   el.innerHTML = `<h1>Your history</h1><p class="hint">Loading…</p>`;
 
-  const { data: sessions, error } = await supa
+  const FIELDS = 'id, goal, confidence, final_confidence, created_at, readings(title)';
+  let { data: sessions, error } = await supa
     .from('sessions')
-    .select('id, goal, confidence, final_confidence, created_at, readings(title)')
+    .select(FIELDS + ', title')
     .eq('student_id', state.user.id)
     .order('created_at', { ascending: false });
+
+  // Without session_title_migration.sql there is no title column, and asking
+  // for it fails the whole query. Fall back rather than showing an empty
+  // History: the names for pasted texts are missing, everything else is not.
+  if (error && isMissingColumn(error, 'title')) {
+    ({ data: sessions, error } = await supa
+      .from('sessions')
+      .select(FIELDS)
+      .eq('student_id', state.user.id)
+      .order('created_at', { ascending: false }));
+  }
 
   if (error) {
     // A missing column is a setup problem, not something the student did
@@ -1119,7 +1188,9 @@ async function renderHistoryView() {
   const rows = sessions.map(s => {
     const st = statsFor(s.id);
     const when = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
-    const title = (s.readings && s.readings.title) || 'A pasted or deleted text';
+    // A session points at a reading, or carries its own title for text the
+    // student pasted. Neither means the reading has since been deleted.
+    const title = (s.readings && s.readings.title) || s.title || 'A pasted or deleted text';
     return `<div class="reading-row-card">
       <div>
         <b>${esc(title)}</b>
@@ -1261,6 +1332,10 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   resetSession();
   setReaderText(title, byline, bodyHtml);
   state.reading = { id: readingId };
+  // Set after resetSession, which clears it. Only a text with no reading row
+  // behind it needs a title of its own; a real reading already has one, and
+  // storing a second copy would mean two that can disagree.
+  state.pastedTitle = readingId ? null : title;
 
   $('#pickerPane').hidden = true;
   $('#readerWorkspace').hidden = false;
@@ -1284,9 +1359,14 @@ async function ensureQuizSession() {
   // attempt has no goal, no flagged passages and no check-ins, so counting
   // it as a reading session inflates every per-session figure the teacher
   // dashboard and the evaluation rely on. Needs session_kind_migration.sql.
-  const { data, error } = await supa.from('sessions').insert({
-    student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz'
-  }).select('id').single();
+  const row = { student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz' };
+  if (!quizCtx.readingId && quizCtx.isPasted && quizCtx.title) row.title = quizCtx.title;
+
+  let { data, error } = await supa.from('sessions').insert(row).select('id').single();
+  if (error && row.title && isMissingColumn(error, 'title')) {
+    delete row.title;
+    ({ data, error } = await supa.from('sessions').insert(row).select('id').single());
+  }
   if (error) { noteSaveFailure('the quiz attempt', error); return null; }
   quizCtx.sessionId = data.id;
   return data.id;
