@@ -1,0 +1,769 @@
+﻿id,language,persona,question,dialogue,never gives answer (y/n),uses the passage (y/n),sounds like Grade 7 (1-5),natural language (1-5),overall Socratic quality (1-5),notes
+philiri_g7_fil_pre_A_q6_answer_seeker_r0,fil,answer_seeker,Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?
+a. Mauubos ang mga isda sa dagat.
+b. Mawawalan ng hanapbuhay ang mga mangingisda.
+c. Matatakot na gumamit ng pampasabog ang mga tao.
+d. Maraming gagamit ng tamang paraan ng pangingisda.
+
+Sir, hula po ang tanong na ito, wala sa teksto. Sabihin n'yo na lang po.
+TEACHER: Tama ka na kailangan nating humula, pero may mga clue sa teksto. Ano ang nangyayari sa maliliit na isda kapag gumagamit ng pampasabog?
+STUDENT: Namamatay po. Tapos ano po?
+TEACHER: Ano naman ang ginagawa ng iba sa coral reefs, at ano ang coral reefs para sa mga isda?
+STUDENT: Sinisira po. Tirahan po iyon ng mga isda.
+TEACHER: Kung patay ang batang isda at wala na silang tirahan, at walang pipigil, ano ang mangyayari?
+STUDENT: Mauubos po ang isda sa dagat. A po, kasi hindi na sila makakarami at wala silang tirahan.
+TEACHER: Ikaw mismo ang nakabuo ng hinuha mula sa mga detalye. Ganyan ang tamang paghula.",,,,,,
+philiri_g7_en_pre_A_q3_literal_r0,en,literal,What is found in dark chocolate that will help encourage its consumption?,"STUDENT: Teacher, can you help me with this question?
+
+What is found in dark chocolate that will help encourage its consumption?
+a. antioxidants
+b. sugar
+c. fats
+d. milk
+
+""It has antioxidants that help protect the heart.""
+TEACHER: Good, you found a useful sentence. The question asks what would 'encourage its consumption.' What do you think that phrase means?
+STUDENT: I'm not sure. Consumption is... eating?
+TEACHER: Yes, consumption means eating or using something. So 'encourage its consumption' means making people want to eat it. Does the sentence you found give a reason to eat dark chocolate?
+STUDENT: Yes. If antioxidants protect the heart, people would want to eat it to be healthy.
+TEACHER: That's a good explanation in your own words. So which choice is your answer?
+STUDENT: a, antioxidants. They help protect the heart, so people would want to eat dark chocolate.
+TEACHER: Excellent! You connected the fact in the passage to the reason people would eat it. That's how you answer 'why' questions.",,,,,,
+philiri_g7_en_pre_A_q1_literal_r0,en,literal,Why was chocolate called Theobroma cacao? It is considered to be _____.,"STUDENT: Teacher, can you help me with this question?
+
+Why was chocolate called Theobroma cacao? It is considered to be _____.
+a. fattening food
+b. magical tree
+c. medicinal candy
+d. food of the gods
+
+""In fact, cacao trees are sometimes called Theobroma cacao which means food of the gods.""
+TEACHER: You found the right sentence. Can you say in your own words what that sentence is telling us about the name?
+STUDENT: It's telling us... the name of the tree?
+TEACHER: Yes, and there's a word right after the name, 'which means.' What does that part tell us about the name?
+STUDENT: It tells what the name means. Theobroma cacao means food of the gods. So people think chocolate is like food for gods, very special.
+TEACHER: Good, you explained it in your own words. So which choice completes the question?
+STUDENT: d, food of the gods, because the passage says that is what the name means.
+TEACHER: Well done! You didn't just copy the sentence; you explained that the name shows how special people think chocolate is.",,,,,,
+philiri_g7_en_pre_A_q6_right_no_reason_r0,en,right_no_reason,Which of the following body systems does not directly benefit from the consumption of dark chocolate?,"STUDENT: Teacher, can you help me with this question?
+
+Which of the following body systems does not directly benefit from the consumption of dark chocolate?
+a. Circulatory system
+b. Respiratory system
+c. Excretory system
+d. Nervous system
+
+c, excretory system.
+TEACHER: Okay, can you prove it? How do you know the other three systems do benefit?
+STUDENT: Hmm. I'm not sure. Excretory just sounded different.
+TEACHER: Let's check. What does the passage say about the heart?
+STUDENT: Antioxidants protect the heart. So circulatory benefits. And it helps respiratory problems, so respiratory benefits.
+TEACHER: Good. What about the nervous system? Which body part is it about?
+STUDENT: The brain. Chocolate increases serotonin in the brain. So all three benefit, and excretory is never mentioned. That's why it's c.
+TEACHER: Now your answer is backed by proof for every choice, not just a feeling that it sounded different.",,,,,,
+philiri_g7_en_pre_A_q6_distracted_r0,en,distracted,Which of the following body systems does not directly benefit from the consumption of dark chocolate?,"STUDENT: Teacher, can you help me with this question?
+
+Which of the following body systems does not directly benefit from the consumption of dark chocolate?
+a. Circulatory system
+b. Respiratory system
+c. Excretory system
+d. Nervous system
+
+Body systems? We did that in science last week. I forgot most of it. Is it respiratory?
+TEACHER: No worries, we can figure it out. The passage says chocolate helps respiratory problems, so does the respiratory system benefit or not?
+STUDENT: It benefits. So not b. Ugh, I'm hungry.
+TEACHER: Almost lunch! Let's finish this first. The passage also mentions the heart and the brain. Which systems do the heart and brain belong to?
+STUDENT: Heart is circulatory. Brain is nervous system.
+TEACHER: Great, you remembered more than you thought. So which system on the list is not mentioned in the passage at all?
+STUDENT: Excretory! The passage talks about the heart, breathing, and the brain, but nothing about excretory. So the answer is c.
+TEACHER: Well done! You matched each benefit to a body system and found the one left out.",,,,,,
+philiri_g7_en_pre_A_q5_wrong_inference_r0,en,wrong_inference,"If a person coughs and is asked to have some chocolate, why would this be good advice?","STUDENT: Teacher, can you help me with this question?
+
+If a person coughs and is asked to have some chocolate, why would this be good advice?
+a. Dark chocolate helps respiratory problems.
+b. Dark chocolate helps circulation.
+c. Dark chocolate does not raise the level of cholesterol.
+d. Dark chocolate has vitamins and minerals.
+
+It's b, it helps circulation. When my lola coughs, the doctor says it's about her blood.
+TEACHER: I hope your lola is okay! Let's check the passage, though. Does it mention circulation anywhere?
+STUDENT: No, I don't see circulation.
+TEACHER: Good checking. Is there a part that talks about coughs?
+STUDENT: Yes. ""It has been found out to help ease coughs and respiratory concerns."" And before that, ""it helps address respiratory problems.""
+TEACHER: So which choice matches what the passage says about coughs?
+STUDENT: a, dark chocolate helps respiratory problems. The passage says it eases coughs and respiratory concerns, but it doesn't say anything about circulation.
+TEACHER: Excellent! You checked your own idea against the passage and went with what the text actually says.",,,,,,
+philiri_g7_en_pre_A_q3_wrong_inference_r0,en,wrong_inference,What is found in dark chocolate that will help encourage its consumption?,"STUDENT: Teacher, can you help me with this question?
+
+What is found in dark chocolate that will help encourage its consumption?
+a. antioxidants
+b. sugar
+c. fats
+d. milk
+
+Definitely b, sugar. Everyone eats chocolate because it's sweet.
+TEACHER: That's true for a lot of people! But let's check the passage. Can you find the word 'sugar' anywhere in it?
+STUDENT: Hmm... no. It's not there.
+TEACHER: Good checking. So the passage must give a different reason. Which of the four choices does the passage say is good for us?
+STUDENT: Antioxidants. It says they help protect the heart. But sugar still makes it taste good though.
+TEACHER: Fair point, but our answer must come from the passage. So based on the text, which choice would encourage people to eat dark chocolate?
+STUDENT: Okay, a, antioxidants, because the passage says they protect the heart. Sugar isn't even mentioned.
+TEACHER: Great thinking! You tested your idea against the passage and changed your answer when the text didn't support it.",,,,,,
+philiri_g7_en_pre_A_q3_careless_r0,en,careless,What is found in dark chocolate that will help encourage its consumption?,"STUDENT: Teacher, can you help me with this question?
+
+What is found in dark chocolate that will help encourage its consumption?
+a. antioxidants
+b. sugar
+c. fats
+d. milk
+
+Fats, c. The passage talks about fat content.
+TEACHER: It does mention fat. But think about the question: 'encourage its consumption' means something that makes people want to eat it. Does the passage say fat is good for us?
+STUDENT: No, it just says the fat doesn't raise cholesterol.
+TEACHER: Right, so fat isn't really presented as a reason to eat it. Look for something in dark chocolate that the passage says helps the body. Which of the choices is mentioned that way?
+STUDENT: Antioxidants! It says they help protect the heart.
+TEACHER: Good. So which answer would encourage people to eat dark chocolate, and why?
+STUDENT: a, antioxidants, because the passage says they help protect the heart. That's a good reason to eat it.
+TEACHER: Well done! You read the whole question first and then looked for a benefit, not just a word you recognized.",,,,,,
+philiri_g7_fil_pre_A_q4_answer_seeker_r0,fil,answer_seeker,Bakit maraming Pilipinong may hanapbuhay na pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Bakit maraming Pilipinong may hanapbuhay na pangingisda?
+a. Magaling lumangoy ang mga Pilipino.
+b. Maraming hindi nais magtrabaho sa taniman.
+c. Walang ibang makuhang trabaho ang mga Pilipino.
+d. Napaliligiran ng malawak na karagatan ang Pilipinas.
+
+Sir, alin po ba? Pakisabi na lang po.
+TEACHER: Malapit lang ang sagot! Basahin mo ang unang talata. Tatlong pangungusap lang iyon. Ano ang sinasabi ng una?
+STUDENT: ""Ang ating bansa ay napaliligiran ng malawak na karagatan."" Iyon na po ba?
+TEACHER: Ano sa tingin mo? Basahin mo rin ang huling pangungusap ng talata. Ano ang koneksyon nila?
+STUDENT: ""Kaya marami sa mga Pilipino ay pangingisda ang ikinabubuhay."" Ah, dahil maraming dagat, kaya maraming mangingisda.
+TEACHER: Magaling na pagdugtong! Kaya ano ang sagot mo?
+STUDENT: D po, napaliligiran ng malawak na karagatan ang Pilipinas, kasi iyon ang dahilan ayon sa unang talata.
+TEACHER: Kita mo, ikaw mismo ang nakakita! Pinagdugtong mo ang dahilan at bunga gamit ang 'kaya.'",,,,,,
+philiri_g7_en_pre_A_q2_right_no_reason_r0,en,right_no_reason,Which statement is true?,"STUDENT: Teacher, can you help me with this question?
+
+Which statement is true?
+a. All chocolates have medicinal properties.
+b. In small doses, dark chocolate is fattening.
+c. Dark chocolate has minerals and vitamins.
+d. Chocolate raises the level of cholesterol.
+
+c. Dark chocolate has minerals and vitamins.
+TEACHER: You chose quickly. Can you show me the part of the passage that tells you that?
+STUDENT: Um, I just know it's healthy. It's somewhere there.
+TEACHER: Let's find it. Look at the second paragraph where it lists the benefits. What is the first benefit mentioned?
+STUDENT: ""It has some of the most important minerals and vitamins that people need.""
+TEACHER: That's your proof. Now, why is choice d not true? Check what the passage says about cholesterol.
+STUDENT: It says the fat does not raise cholesterol, so d says the opposite. So c is correct because the second paragraph says dark chocolate has minerals and vitamins.
+TEACHER: Excellent! Now your answer has proof, and you know why another choice is wrong. That's how good readers answer.",,,,,,
+philiri_g7_fil_pre_A_q5_literal_r0,fil,literal,Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?
+a. Natatakot ang mga isda.
+b. Hindi na lumalaki ang mga isda.
+c. Wala nang makakaing isda ang mga tao.
+d. Namamatay ang maliliit at batang isda.
+
+""Namamatay ang maliliit na isda na dapat sana ay lumaki at dumami pa.""
+TEACHER: Tamang pangungusap. Sa sarili mong salita, bakit masama iyon?
+STUDENT: Kasi namamatay po sila.
+TEACHER: Oo, pero tingnan mo ang dulo ng pangungusap: 'dapat sana ay lumaki at dumami pa.' Ano ang ibig sabihin niyon para sa dami ng isda sa hinaharap?
+STUDENT: Hindi na po sila dadami. Mababawasan ang isda kasi ang mga batang isda pa lang ay patay na.
+TEACHER: Magaling na paliwanag. Ano ngayon ang sagot mo?
+STUDENT: D po, namamatay ang maliliit at batang isda, kasi iyon ang sinabi ng teksto at dahil dito hindi na dadami ang isda.
+TEACHER: Mahusay! Hindi mo lang kinopya ang pangungusap; ipinaliwanag mo kung bakit ito masama.",,,,,,
+philiri_g7_fil_pre_A_q2_distracted_r0,fil,distracted,Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?
+a. pamimingwit
+b. paggamit ng lambat
+c. ang paraang pagbubuslo
+d. paggamit ng pampasabog
+
+Ma'am, mahilig po mamingwit ang tatay ko tuwing Sabado. Bawal po ba iyon? A po ba?
+TEACHER: Masaya siguro iyon! Tingnan natin ang teksto. Sinabi bang masama o bawal ang pamimingwit?
+STUDENT: Hindi po binanggit. Ano po ulit ang tanong? Sorry po.
+TEACHER: Ayos lang. Ang tanong ay kung aling paraan ang ipinagbabawal. Hanapin mo ang bahagi kung saan sinabing inaabuso ang kasaganahan ng isda. Anong paraan ang ginagamit doon?
+STUDENT: Pampasabog at lasong kemikal po, para makahuli ng maraming isda.
+TEACHER: Magaling. Aling pagpipilian ang tugma roon, at bakit ito ipinagbabawal?
+STUDENT: D po, paggamit ng pampasabog. Kasi sabi sa teksto, namamatay ang maliliit na isda at may batas laban sa maling paraan ng pangingisda.
+TEACHER: Mahusay! Bumalik ka sa teksto at nakita mo ang tamang bahagi. Hindi bawal ang pamimingwit ng tatay mo.",,,,,,
+philiri_g7_en_pre_A_q1_wrong_inference_r0,en,wrong_inference,Why was chocolate called Theobroma cacao? It is considered to be _____.,"STUDENT: Teacher, can you help me with this question?
+
+Why was chocolate called Theobroma cacao? It is considered to be _____.
+a. fattening food
+b. magical tree
+c. medicinal candy
+d. food of the gods
+
+It's a, fattening food. My mom always says chocolate makes you fat.
+TEACHER: Your mom has a point, and the passage even mentions that warning. But the question asks why it was called Theobroma cacao. Does the passage explain the name?
+STUDENT: Hmm, maybe? I'll check... yes, the first paragraph has the name.
+TEACHER: Good. Read that sentence again. What does it say right after the name?
+STUDENT: ""Which means food of the gods."" Oh. So it's not about being fattening.
+TEACHER: So which choice is supported by the passage, and what is your proof?
+STUDENT: It's d, food of the gods. The passage says Theobroma cacao means food of the gods.
+TEACHER: Great job changing your answer based on the text! What we know from home can be true, but the question asks what the passage says.",,,,,,
+philiri_g7_fil_pre_A_q8_distracted_r0,fil,distracted,Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.
+a. ipagmalaki ang Pilipinas bilang isang mayamang bansa
+b. makilala ang Pilipinas bilang magandang pinagkukunan ng isda
+c. ipaubaya sa pamahalaan ang pag-aalaga sa mga katubigan ng bansa
+d. malaman ng tao na sa bawat gawain ay may kaakibat na responsibilidad
+
+Ma'am, ang haba po ng mga pagpipilian. Inaantok na po ako. B po ba, magandang pinagkukunan ng isda?
+TEACHER: Konting tiis na lang, huling tanong na ito! Ang B ay bahagi ng teksto, pero ito ba ang buong punto? Basahin mo ang pinakahuling pangungusap ng teksto.
+STUDENT: ""Ito ang mga dahilan kung bakit kailangang alagaan ang industriyang ito.""
+TEACHER: Magaling. Ano ang gustong mangyari ng manunulat sa sinasabing 'kailangang alagaan'?
+STUDENT: Gusto po niyang alagaan natin ang pangingisda at huwag abusuhin.
+TEACHER: Tama. Aling pagpipilian ang tungkol sa pag-aalaga o pananagutan kasama ng paggamit ng biyaya?
+STUDENT: D po, na sa bawat gawain ay may kaakibat na responsibilidad. Kasi sabi sa dulo, kailangang alagaan ang industriya at hindi abusuhin.
+TEACHER: Mahusay! Ang huling pangungusap ay madalas na clue sa layunin ng manunulat. Pwede ka nang magpahinga.",,,,,,
+philiri_g7_fil_pre_A_q5_wrong_inference_r0,fil,wrong_inference,Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?
+a. Natatakot ang mga isda.
+b. Hindi na lumalaki ang mga isda.
+c. Wala nang makakaing isda ang mga tao.
+d. Namamatay ang maliliit at batang isda.
+
+C po, wala nang makakaing isda ang mga tao. Kasi kung pinapasabog, mauubos lahat.
+TEACHER: Naiintindihan ko ang iniisip mo. Pero sinabi ba ng teksto na wala nang makakain ang mga tao?
+STUDENT: Hindi po tuwiran. Inisip ko lang po.
+TEACHER: Magandang pag-amin. Ano ang tuwirang sinabi ng teksto na nangyayari dahil sa pampasabog at lason?
+STUDENT: Namamatay po ang maliliit na isda na dapat sana ay lumaki at dumami pa.
+TEACHER: Tama. Kung ikukumpara, alin ang mas sinusuportahan ng teksto: 'wala nang makakain' o 'namamatay ang maliliit na isda'?
+STUDENT: Ang namamatay ang maliliit na isda po, kasi iyon ang nakasulat. Ang C ay masyadong malaki. Kaya D po.
+TEACHER: Magaling! Pinili mo ang sagot na may patunay sa teksto kaysa sa sobrang laking hula.",,,,,,
+philiri_g7_en_pre_A_q5_literal_r0,en,literal,"If a person coughs and is asked to have some chocolate, why would this be good advice?","STUDENT: Teacher, can you help me with this question?
+
+If a person coughs and is asked to have some chocolate, why would this be good advice?
+a. Dark chocolate helps respiratory problems.
+b. Dark chocolate helps circulation.
+c. Dark chocolate does not raise the level of cholesterol.
+d. Dark chocolate has vitamins and minerals.
+
+""Also, it has been found out to help ease coughs and respiratory concerns.""
+TEACHER: That's the right sentence. Can you explain in your own words what it means for a person who is coughing?
+STUDENT: It means chocolate can ease coughs.
+TEACHER: Yes. The word 'respiratory' is used with coughs. What do you think respiratory problems are, based on that sentence?
+STUDENT: Maybe problems with breathing, like coughing and colds?
+TEACHER: Good guess, and it's correct: respiratory is about breathing. So which choice explains why chocolate is good advice for a coughing person?
+STUDENT: a, dark chocolate helps respiratory problems. Coughing is a breathing problem, and the passage says chocolate helps ease coughs.
+TEACHER: Well explained! You used the sentence and figured out the meaning of 'respiratory' from the words around it.",,,,,,
+philiri_g7_fil_pre_A_q7_careless_r0,fil,careless,Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?
+a. mahilig sa gulo
+b. matigas ang ulo
+c. malikhain sa trabaho
+d. masipag maghanapbuhay
+
+D po, masipag maghanapbuhay. Kasi nangingisda pa rin po sila.
+TEACHER: Masipag nga silang mangisda, pero tingnan mo ang tanong: 'patuloy na gumagamit ng maling paraan.' Ayon sa teksto, may batas ba laban sa maling paraan?
+STUDENT: Opo, may batas po. Sinusugpo po ng BFAR ang mga lumalabag.
+TEACHER: Tama. Kung alam nilang bawal pero ginagawa pa rin nila, anong ugali iyon?
+STUDENT: Pasaway po. Hindi sumusunod.
+TEACHER: Aling pagpipilian ang ibig sabihin ay 'pasaway' o hindi sumusunod?
+STUDENT: B po, matigas ang ulo. Kasi kahit may batas at sinusugpo sila ng BFAR, patuloy pa rin silang lumalabag.
+TEACHER: Magaling! Binasa mo nang mabuti ang salitang 'patuloy' sa tanong at iniugnay mo ito sa batas sa teksto.",,,,,,
+philiri_g7_en_pre_A_q6_answer_seeker_r0,en,answer_seeker,Which of the following body systems does not directly benefit from the consumption of dark chocolate?,"STUDENT: Teacher, can you help me with this question?
+
+Which of the following body systems does not directly benefit from the consumption of dark chocolate?
+a. Circulatory system
+b. Respiratory system
+c. Excretory system
+d. Nervous system
+
+This one is hard. Just tell me which one, please?
+TEACHER: It's tricky because it says 'does not.' Let's make it easier. Which body parts does the passage say chocolate helps?
+STUDENT: Can't you just list them for me?
+TEACHER: You can do it in one look. Start with the antioxidants sentence. What body part does it protect?
+STUDENT: The heart. Then coughs, that's breathing. And serotonin is in the brain.
+TEACHER: Perfect. The heart is circulatory, breathing is respiratory, and the brain is nervous. So which choice is NOT helped, based on the passage?
+STUDENT: c, excretory system, because the passage only mentions the heart, breathing, and the brain.
+TEACHER: You did it yourself! Breaking a hard question into small parts made it easy.",,,,,,
+philiri_g7_en_pre_A_q7_literal_r0,en,literal,Which important fact shows that dark chocolate may be safe for the heart?,"STUDENT: Teacher, can you help me with this question?
+
+Which important fact shows that dark chocolate may be safe for the heart?
+a. It may ease coughs.
+b. It helps address respiratory problems.
+c. It does not raise the level of cholesterol.
+d. In small quantities, dark chocolate has been said to be medicinal.
+
+""Another important benefit is that the fat content of chocolate does not raise the level of cholesterol in the blood stream.""
+TEACHER: Good sentence. Can you explain why that would matter for the heart?
+STUDENT: Because it's about the blood?
+TEACHER: That's the start. The heart pumps blood. What do you know about high cholesterol and the heart?
+STUDENT: My tita says high cholesterol is bad for the heart. So if chocolate doesn't raise it, it's safer for the heart.
+TEACHER: Nice connection! So which choice shows that dark chocolate may be safe for the heart?
+STUDENT: c, it does not raise the level of cholesterol, because high cholesterol is bad for the heart and the passage says chocolate doesn't raise it.
+TEACHER: Well explained! You connected the sentence to what it means for the heart.",,,,,,
+philiri_g7_en_pre_A_q1_careless_r0,en,careless,Why was chocolate called Theobroma cacao? It is considered to be _____.,"STUDENT: Teacher, can you help me with this question?
+
+Why was chocolate called Theobroma cacao? It is considered to be _____.
+a. fattening food
+b. magical tree
+c. medicinal candy
+d. food of the gods
+
+It's b, magical tree. I saw the word magical in the first paragraph.
+TEACHER: Good that you looked back at the passage. The word 'magical' is there, but what is it describing in that sentence?
+STUDENT: Um, it says some people believe chocolate has magical and medicinal effects.
+TEACHER: Right, that's about what people believe chocolate can do. Now find the sentence with the name Theobroma cacao. What does it say the name means?
+STUDENT: Oh, it says 'which means food of the gods.'
+TEACHER: Nice reading. So which choice matches what the name means, and why?
+STUDENT: It's d, food of the gods, because the passage says Theobroma cacao means food of the gods. Magical was just about what people believe.
+TEACHER: Exactly! You found the sentence that explains the name instead of choosing a word you spotted. Always check what a word is describing before you pick it.",,,,,,
+philiri_g7_fil_pre_A_q7_wrong_inference_r0,fil,wrong_inference,Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?
+a. mahilig sa gulo
+b. matigas ang ulo
+c. malikhain sa trabaho
+d. masipag maghanapbuhay
+
+C po, malikhain. Kasi nag-iimbento po sila ng bagong paraan, gaya ng pampasabog.
+TEACHER: Interesanteng ideya. Pero positibo ba o negatibo ang pagtingin ng teksto sa paraang iyon?
+STUDENT: Negatibo po. Inaabuso daw po.
+TEACHER: Tama. At ano ang tawag ng teksto sa mga mangingisdang ito sa ikatlong talata?
+STUDENT: Mga mangingisdang lumalabag sa batas po.
+TEACHER: Kung patuloy kang lumalabag sa batas kahit may pumipigil, malikhain ba iyon o ibang ugali?
+STUDENT: Hindi po malikhain, matigas po ang ulo. B po, kasi patuloy silang lumalabag sa batas kahit sinusugpo sila.
+TEACHER: Magaling! Napansin mo na negatibo ang tingin ng teksto, kaya binago mo ang sagot mo.",,,,,,
+philiri_g7_fil_pre_A_q8_right_no_reason_r0,fil,right_no_reason,Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.
+a. ipagmalaki ang Pilipinas bilang isang mayamang bansa
+b. makilala ang Pilipinas bilang magandang pinagkukunan ng isda
+c. ipaubaya sa pamahalaan ang pag-aalaga sa mga katubigan ng bansa
+d. malaman ng tao na sa bawat gawain ay may kaakibat na responsibilidad
+
+D po.
+TEACHER: Tama ba ang hula mo? Patunayan natin. Anong bahagi ng teksto ang nagpapakita na tungkol ito sa responsibilidad?
+STUDENT: Hindi ko po alam kung saan eksakto.
+TEACHER: Basahin mo ang huling pangungusap ng teksto. Ano ang sinasabi nito?
+STUDENT: ""Ito ang mga dahilan kung bakit kailangang alagaan ang industriyang ito."" Kaya responsibilidad po nating alagaan.
+TEACHER: Magaling. Bakit naman mali ang C, ipaubaya sa pamahalaan ang pag-aalaga?
+STUDENT: Kasi sabi po ng manunulat, kailangang alagaan, para sa lahat, hindi lang pamahalaan. Kaya D po, kasi may responsibilidad tayong lahat.
+TEACHER: Napakahusay! May patunay ka na at naipaliwanag mo pa kung bakit mali ang isang pagpipilian.",,,,,,
+philiri_g7_en_pre_A_q8_answer_seeker_r0,en,answer_seeker,What does “address” mean in the second paragraph?,"STUDENT: Teacher, can you help me with this question?
+
+What does “address” mean in the second paragraph?
+a. to locate
+b. to identify
+c. to deal with
+d. to recognize
+
+What does address mean? Just tell me, it's a vocabulary question.
+TEACHER: It is, but the passage gives you clues to figure it out. Read the sentence with 'address.' What is chocolate addressing?
+STUDENT: Respiratory problems. So what does it mean? Is it identify?
+TEACHER: Let's check with the next sentence. It says chocolate helps ____ coughs and respiratory concerns. What's that word?
+STUDENT: Ease. So chocolate makes the problems better.
+TEACHER: Right. So which choice means making a problem better or handling it?
+STUDENT: c, to deal with. Because the next sentence says chocolate helps ease coughs, so it deals with the problem, not just identifies it.
+TEACHER: Great! You used the next sentence as a clue to the meaning, which is something you can do with any new word.",,,,,,
+philiri_g7_en_pre_A_q7_wrong_inference_r0,en,wrong_inference,Which important fact shows that dark chocolate may be safe for the heart?,"STUDENT: Teacher, can you help me with this question?
+
+Which important fact shows that dark chocolate may be safe for the heart?
+a. It may ease coughs.
+b. It helps address respiratory problems.
+c. It does not raise the level of cholesterol.
+d. In small quantities, dark chocolate has been said to be medicinal.
+
+b, it helps respiratory problems. If you can breathe well, your heart is safe.
+TEACHER: Breathing and the heart do work together, but the passage separates them. What does the passage say respiratory problems are connected to?
+STUDENT: Coughs.
+TEACHER: Right. So look for a choice that is about the blood or the heart. Which one is it?
+STUDENT: c, cholesterol? I thought cholesterol was just about being fat.
+TEACHER: Good question. The passage says 'level of cholesterol in the blood stream.' What does the blood have to do with the heart?
+STUDENT: The heart pumps the blood. So if chocolate doesn't raise cholesterol in the blood, it's safe for the heart. The answer is c.
+TEACHER: Excellent reasoning! You used the phrase 'in the blood stream' to connect cholesterol to the heart.",,,,,,
+philiri_g7_fil_pre_A_q1_literal_r0,fil,literal,Ano-anong isda ang ipinapadala sa ibang bansa?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano-anong isda ang ipinapadala sa ibang bansa?
+a. dilis at tawilis
+b. tilapia at bangus
+c. tuna at lapu-lapu
+d. galunggong at bisugo
+
+""Iba't ibang uri ng isda ang dinadala natin sa mga bansang ito tulad ng tuna at lapu-lapu.""
+TEACHER: Tama ang pangungusap na nakita mo. Anong mga bansa ang tinutukoy ng 'mga bansang ito'?
+STUDENT: Hindi ko po sigurado.
+TEACHER: Tingnan mo ang pangungusap bago nito. Saang mga bansa nag-eeksport ang ating pamahalaan?
+STUDENT: Hongkong at Taiwan po. Kaya ang tuna at lapu-lapu ay ipinapadala natin sa Hongkong at Taiwan.
+TEACHER: Magaling, naipaliwanag mo na sa sarili mong salita. Ano ngayon ang sagot mo?
+STUDENT: C po, tuna at lapu-lapu, kasi iyon ang mga isdang ipinapadala natin sa Hongkong at Taiwan ayon sa teksto.
+TEACHER: Napakahusay! Inalam mo pa kung ano ang tinutukoy ng 'mga bansang ito,' kaya buo ang pag-unawa mo.",,,,,,
+philiri_g7_fil_pre_A_q5_careless_r0,fil,careless,Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano kaya ang masamang epekto ng paggamit ng pampasabog at lason sa pangingisda sa tao?
+a. Natatakot ang mga isda.
+b. Hindi na lumalaki ang mga isda.
+c. Wala nang makakaing isda ang mga tao.
+d. Namamatay ang maliliit at batang isda.
+
+A po, natatakot ang mga isda. Kasi malakas po ang pagsabog.
+TEACHER: Mukhang makatwiran, pero sinabi ba ng teksto na natatakot ang mga isda? Hanapin mo ang pangungusap pagkatapos ng pampasabog at lason.
+STUDENT: ""Namamatay ang maliliit na isda na dapat sana ay lumaki at dumami pa."" Wala nga pong natatakot.
+TEACHER: Magaling. Ayon sa pangungusap na iyan, ano ang tunay na epekto?
+STUDENT: Namamatay po ang maliliit na isda. Pero ang tanong po ay epekto sa tao, di ba?
+TEACHER: Magandang napansin mo iyan. Kung namamatay ang maliliit na isda bago pa lumaki at dumami, ano ang mangyayari sa isdang mahuhuli ng mga tao sa hinaharap?
+STUDENT: Kakaunti na po ang isda para sa mga tao. Pero sa mga pagpipilian, ang nakasulat po sa teksto ay D, namamatay ang maliliit at batang isda.
+TEACHER: Tama! Pinili mo ang epektong tuwirang nakasaad sa teksto at naipaliwanag mo pa kung paano ito nakaaapekto sa tao.",,,,,,
+philiri_g7_fil_pre_A_q3_wrong_inference_r0,fil,wrong_inference,Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?
+a. Bureau of Food and Drug
+b. Metro Manila Development Authority
+c. Bureau of Fisheries and Aquatic Resources
+d. Department of Energy and Natural Resources
+
+B po, MMDA. Sila po kasi ang nanghuhuli ng mga lumalabag sa batas, napapanood ko po sa balita.
+TEACHER: Nanghuhuli nga ang MMDA, pero sa anong uri ng paglabag? Sa trapiko o sa pangingisda?
+STUDENT: Sa trapiko po. Pero baka sila rin po sa dagat?
+TEACHER: Tingnan natin ang teksto. Anong tanggapan ang binanggit sa ikatlong talata tungkol sa pangingisda?
+STUDENT: BFAR po, Bureau of Fisheries and Aquatic Resources. Wala pong MMDA.
+TEACHER: Tama. Ano raw ang ginagawa ng BFAR?
+STUDENT: Gumagawa po ng hakbang para masugpo ang mga mangingisdang lumalabag sa batas. Kaya C po ang sagot, BFAR.
+TEACHER: Magaling! Sinuri mo ang sarili mong hula gamit ang teksto at itinuwid mo ito.",,,,,,
+philiri_g7_fil_pre_A_q8_answer_seeker_r0,fil,answer_seeker,Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang layunin ng manunulat ng seleksyon? Nais ng manunulat na ________________________________________.
+a. ipagmalaki ang Pilipinas bilang isang mayamang bansa
+b. makilala ang Pilipinas bilang magandang pinagkukunan ng isda
+c. ipaubaya sa pamahalaan ang pag-aalaga sa mga katubigan ng bansa
+d. malaman ng tao na sa bawat gawain ay may kaakibat na responsibilidad
+
+Sir, layunin ng manunulat? Mahirap po iyan. Ano po ang sagot?
+TEACHER: Mahirap nga ang ganitong tanong, kaya hatiin natin. Sa unang talata, ano ang sinasabi tungkol sa isda sa ating bansa?
+STUDENT: Sagana po. Biyaya po iyon. Tapos ano po?
+TEACHER: Sa ikalawang talata, may salitang 'Subalit.' Ano ang problemang binanggit pagkatapos nito?
+STUDENT: Inaabuso po ang kasaganahan, gumagamit ng pampasabog.
+TEACHER: At sa dulo, ano ang sinasabi ng manunulat na dapat gawin?
+STUDENT: Kailangang alagaan po. Ah, kaya ang punto po ay may biyaya pero kailangan nating alagaan. D po, may kaakibat na responsibilidad ang bawat gawain.
+TEACHER: Ikaw mismo ang nakakita sa layunin dahil sinundan mo ang daloy ng buong teksto.",,,,,,
+philiri_g7_fil_pre_A_q3_literal_r0,fil,literal,Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?
+a. Bureau of Food and Drug
+b. Metro Manila Development Authority
+c. Bureau of Fisheries and Aquatic Resources
+d. Department of Energy and Natural Resources
+
+""Ang Kagawaran ng Agrikultura sa pangunguna ng Bureau of Fisheries and Aquatic Resources (BFAR) ay patuloy na gumagawa ng mga hakbang...""
+TEACHER: Tama ang pangungusap. Sa sarili mong salita, sino ang namumuno sa paghuli sa mga lumalabag?
+STUDENT: Ang Kagawaran ng Agrikultura po? O BFAR?
+TEACHER: Magandang tanong. Tingnan mo ang mga salitang 'sa pangunguna ng.' Ano ang ibig sabihin ng 'pangunguna,' at kanino ito nakakabit sa pangungusap?
+STUDENT: Ibig sabihin po, sila ang nasa unahan o namumuno. Kaya BFAR ang nangunguna sa pagsugpo.
+TEACHER: Magaling na pagpapaliwanag. Ano ngayon ang sagot mo?
+STUDENT: C po, Bureau of Fisheries and Aquatic Resources, kasi sila ang nangunguna ayon sa teksto.
+TEACHER: Mahusay! Inalam mo ang kahulugan ng 'pangunguna' para matiyak ang sagot.",,,,,,
+philiri_g7_en_pre_A_q7_careless_r0,en,careless,Which important fact shows that dark chocolate may be safe for the heart?,"STUDENT: Teacher, can you help me with this question?
+
+Which important fact shows that dark chocolate may be safe for the heart?
+a. It may ease coughs.
+b. It helps address respiratory problems.
+c. It does not raise the level of cholesterol.
+d. In small quantities, dark chocolate has been said to be medicinal.
+
+d, it says in small quantities chocolate is medicinal. Medicine is safe.
+TEACHER: That sounds safe in general, but the question asks specifically about the heart. Do choices a and b talk about the heart?
+STUDENT: No, they're about coughs and breathing.
+TEACHER: Right. So between c and d, which one is a specific fact connected to the blood and the heart?
+STUDENT: c, it doesn't raise cholesterol. Cholesterol is in the blood.
+TEACHER: Good. Where does the passage say that?
+STUDENT: Second paragraph, ""the fat content of chocolate does not raise the level of cholesterol in the blood stream."" So c, because cholesterol affects the heart and the blood.
+TEACHER: Great job! Choice d was too general; c is the specific fact about the heart and blood.",,,,,,
+philiri_g7_fil_pre_A_q6_right_no_reason_r0,fil,right_no_reason,Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?
+a. Mauubos ang mga isda sa dagat.
+b. Mawawalan ng hanapbuhay ang mga mangingisda.
+c. Matatakot na gumamit ng pampasabog ang mga tao.
+d. Maraming gagamit ng tamang paraan ng pangingisda.
+
+A po, mauubos ang mga isda.
+TEACHER: Paano mo nalaman? Anong detalye sa teksto ang nagpapakitang mauubos ang isda?
+STUDENT: Hmm, basta po, kapag walang batas, mauubos.
+TEACHER: Hanapin natin ang patunay. Ayon sa ikalawang talata, ano ang nangyayari sa maliliit na isda at sa coral reefs?
+STUDENT: Namamatay po ang maliliit na isda bago dumami, at sinisira ang coral reefs na tirahan nila.
+TEACHER: Magaling. Bakit naman hindi D, maraming gagamit ng tamang paraan?
+STUDENT: Kasi kung walang pagbabawal, walang dahilan para magbago ang mga lumalabag. Kaya A po, kasi patay ang batang isda at sira ang tirahan nila.
+TEACHER: Napakahusay! May patunay ka na mula sa teksto at naipaliwanag mo kung bakit mali ang D.",,,,,,
+philiri_g7_fil_pre_A_q2_answer_seeker_r0,fil,answer_seeker,Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?
+a. pamimingwit
+b. paggamit ng lambat
+c. ang paraang pagbubuslo
+d. paggamit ng pampasabog
+
+Sir, sabihin n'yo na lang po ang sagot. Hindi ko po alam ang pagbubuslo.
+TEACHER: Ayos lang na hindi mo alam ang pagbubuslo, hindi mo kailangan iyon dito. Sa teksto, anong salita ang ginamit para ilarawan ang maling gamit ng kasaganahan ng isda?
+STUDENT: Saan po iyon? Ituro n'yo na lang po.
+TEACHER: Nasa ikalawang talata, may salitang 'inaabuso.' Ano ang sinabing ginagawa ng ilang mangingisda pagkatapos niyon?
+STUDENT: Gumagamit po sila ng pampasabog at lasong kemikal.
+TEACHER: Tama. Ayon sa ikatlong talata, ano ang ginagawa ng BFAR sa mga mangingisdang lumalabag sa batas?
+STUDENT: Sinusugpo po nila. Kaya bawal ang pampasabog. D po ang sagot, paggamit ng pampasabog, kasi iyon ang pang-aabusong binanggit sa teksto.
+TEACHER: Ikaw mismo ang nakahanap ng sagot! Pinagdugtong mo ang 'inaabuso' at ang pagsugpo ng BFAR.",,,,,,
+philiri_g7_fil_pre_A_q4_distracted_r0,fil,distracted,Bakit maraming Pilipinong may hanapbuhay na pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Bakit maraming Pilipinong may hanapbuhay na pangingisda?
+a. Magaling lumangoy ang mga Pilipino.
+b. Maraming hindi nais magtrabaho sa taniman.
+c. Walang ibang makuhang trabaho ang mga Pilipino.
+d. Napaliligiran ng malawak na karagatan ang Pilipinas.
+
+Ma'am, nagbakasyon po kami sa Palawan, ang daming mangingisda doon! A po ba, magaling lumangoy?
+TEACHER: Ang ganda sa Palawan! Pero binanggit ba sa teksto na magaling lumangoy ang mga Pilipino?
+STUDENT: Hindi po yata. Ano po ulit hinahanap natin?
+TEACHER: Kung bakit maraming Pilipino ang mangingisda. Tingnan mo ang unang talata. May pangungusap na nagsisimula sa 'Kaya.' Ano ang sinasabi bago iyon?
+STUDENT: Napaliligiran po ang bansa ng malawak na karagatan at sagana sa isda. Kaya maraming Pilipino ang mangingisda.
+TEACHER: Magaling. Kaya alin sa mga pagpipilian ang dahilan?
+STUDENT: D po, napaliligiran ng malawak na karagatan ang Pilipinas. Iyon po ang dahilan bago ang 'kaya' sa unang talata.
+TEACHER: Mahusay! Ang salitang 'kaya' ay palatandaan ng sanhi at bunga. Ginamit mo iyon nang tama.",,,,,,
+philiri_g7_en_pre_A_q4_right_no_reason_r0,en,right_no_reason,"After we eat chocolate, which of these is responsible for making us feel good?","STUDENT: Teacher, can you help me with this question?
+
+After we eat chocolate, which of these is responsible for making us feel good?
+a. cacao
+b. theobroma
+c. serotonin
+d. antioxidants
+
+c, serotonin.
+TEACHER: That was quick! Which sentence in the passage tells you serotonin makes us feel good?
+STUDENT: I don't know which sentence. I just picked it.
+TEACHER: Let's find the proof together. Look near the end. Is there a phrase that means 'feeling good'?
+STUDENT: ""A feeling of well-being."" And the sentence before says chocolate increases serotonin in the brain.
+TEACHER: Good. And why isn't it d, antioxidants? What does the passage say those do?
+STUDENT: Antioxidants protect the heart, not make us feel good. So the answer is c, serotonin, because the passage says it gives us a feeling of well-being.
+TEACHER: Now that's a complete answer, with your choice, your proof, and why another choice doesn't fit.",,,,,,
+philiri_g7_fil_pre_A_q1_wrong_inference_r0,fil,wrong_inference,Ano-anong isda ang ipinapadala sa ibang bansa?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano-anong isda ang ipinapadala sa ibang bansa?
+a. dilis at tawilis
+b. tilapia at bangus
+c. tuna at lapu-lapu
+d. galunggong at bisugo
+
+D po, galunggong at bisugo. Marami po kasing galunggong sa palengke namin, siguradong ini-export din iyon.
+TEACHER: Maganda na iniisip mo ang nakikita mo sa palengke. Pero tingnan natin ang teksto. Nabanggit ba roon ang galunggong o bisugo?
+STUDENT: Hmm, wala po.
+TEACHER: Tama ang pagsuri mo. Anong mga isda naman ang binanggit sa bahaging tungkol sa Hongkong at Taiwan?
+STUDENT: Tuna at lapu-lapu po. Pero baka po may galunggong din na ini-export?
+TEACHER: Posible sa totoong buhay, pero ang tanong ay batay sa teksto. Ayon sa teksto, ano ang sagot?
+STUDENT: C po, tuna at lapu-lapu, kasi iyon lang ang isdang binanggit na dinadala sa Hongkong at Taiwan.
+TEACHER: Magaling! Sinubok mo ang hula mo sa teksto at binago mo ang sagot dahil sa ebidensya.",,,,,,
+philiri_g7_fil_pre_A_q7_literal_r0,fil,literal,Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong ugali ang ipinakikita ng mga mangingisdang patuloy na gumagamit ng maling paraan ng pangingisda?
+a. mahilig sa gulo
+b. matigas ang ulo
+c. malikhain sa trabaho
+d. masipag maghanapbuhay
+
+""Ang BFAR ay patuloy na gumagawa ng mga hakbang para masugpo ang mga mangingisdang lumalabag sa batas.""
+TEACHER: Magandang pangungusap. Pero hindi tuwirang sinasabi roon ang ugali nila. Ano ang ibig sabihin ng 'lumalabag sa batas'?
+STUDENT: Hindi po sumusunod sa batas.
+TEACHER: Tama. Kung pinagbabawalan na sila pero patuloy pa rin, anong ugali ang ipinakikita niyon?
+STUDENT: Ayaw po makinig. Parang ang kapatid ko po, sinasabihan na pero ginagawa pa rin.
+TEACHER: Magandang halimbawa! Aling pagpipilian ang tugma sa ugaling iyan?
+STUDENT: B po, matigas ang ulo. Kasi lumalabag sila sa batas kahit pinagbabawalan na.
+TEACHER: Mahusay! Ipinaliwanag mo ang ugali gamit ang sarili mong halimbawa at ang patunay sa teksto.",,,,,,
+philiri_g7_en_pre_A_q2_answer_seeker_r0,en,answer_seeker,Which statement is true?,"STUDENT: Teacher, can you help me with this question?
+
+Which statement is true?
+a. All chocolates have medicinal properties.
+b. In small doses, dark chocolate is fattening.
+c. Dark chocolate has minerals and vitamins.
+d. Chocolate raises the level of cholesterol.
+
+Teacher, can you just tell me which one is true? There are too many.
+TEACHER: I know four choices feel like a lot, so let's check them one at a time. Look at choice d. What does the passage say about chocolate and cholesterol?
+STUDENT: Why don't you just tell me if d is right?
+TEACHER: Because you can figure it out in a few seconds! Find the word 'cholesterol' in the second paragraph. What does that sentence say?
+STUDENT: Okay... ""the fat content of chocolate does not raise the level of cholesterol."" So d is wrong because it says the opposite.
+TEACHER: Exactly, you just ruled one out. Now, what does the passage say dark chocolate has that people need?
+STUDENT: Minerals and vitamins. So the answer is c, because the passage says it has the most important minerals and vitamins.
+TEACHER: See, you did it yourself! You checked the choices against the passage instead of guessing.",,,,,,
+philiri_g7_fil_pre_A_q4_right_no_reason_r0,fil,right_no_reason,Bakit maraming Pilipinong may hanapbuhay na pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Bakit maraming Pilipinong may hanapbuhay na pangingisda?
+a. Magaling lumangoy ang mga Pilipino.
+b. Maraming hindi nais magtrabaho sa taniman.
+c. Walang ibang makuhang trabaho ang mga Pilipino.
+d. Napaliligiran ng malawak na karagatan ang Pilipinas.
+
+D po.
+TEACHER: Mabilis! Anong bahagi ng teksto ang nagpapatunay niyan?
+STUDENT: Hindi ko po alam kung saan, pero parang tama po.
+TEACHER: Hanapin natin. Sa unang talata, may salitang 'kaya.' Ano ang nakasulat bago at pagkatapos nito?
+STUDENT: Napaliligiran ng karagatan at sagana sa isda, kaya pangingisda ang ikinabubuhay ng marami.
+TEACHER: Iyan ang patunay mo. Ngayon, bakit hindi C, walang ibang makuhang trabaho?
+STUDENT: Kasi hindi po iyon sinabi sa teksto. Ang sinabi po ay dahil sa malawak na karagatan. Kaya D po.
+TEACHER: Napakahusay! May patunay ka na at alam mo pa kung bakit mali ang ibang pagpipilian.",,,,,,
+philiri_g7_en_pre_A_q2_distracted_r0,en,distracted,Which statement is true?,"STUDENT: Teacher, can you help me with this question?
+
+Which statement is true?
+a. All chocolates have medicinal properties.
+b. In small doses, dark chocolate is fattening.
+c. Dark chocolate has minerals and vitamins.
+d. Chocolate raises the level of cholesterol.
+
+Ugh, this makes me want chocolate. Is it a? All chocolates are medicine?
+TEACHER: Ha, maybe a little snack after class! Let's check choice a. Does the passage talk about all chocolates, or a certain kind?
+STUDENT: It says dark chocolate. And in small quantities. Teacher, is dark chocolate the bitter one?
+TEACHER: Yes, it's the less sweet kind. So since the passage is about dark chocolate in small amounts, is 'all chocolates' correct? Look at the second paragraph for something it says dark chocolate has.
+STUDENT: Not all chocolates. Okay... it says it has minerals and vitamins that people need.
+TEACHER: Good find. Which choice matches that sentence?
+STUDENT: c! Dark chocolate has minerals and vitamins. Because the second paragraph says it has the most important minerals and vitamins.
+TEACHER: Very good, you came back and found the proof. Choice a was too broad because the passage only talks about dark chocolate.",,,,,,
+philiri_g7_en_pre_A_q5_careless_r0,en,careless,"If a person coughs and is asked to have some chocolate, why would this be good advice?","STUDENT: Teacher, can you help me with this question?
+
+If a person coughs and is asked to have some chocolate, why would this be good advice?
+a. Dark chocolate helps respiratory problems.
+b. Dark chocolate helps circulation.
+c. Dark chocolate does not raise the level of cholesterol.
+d. Dark chocolate has vitamins and minerals.
+
+d, it has vitamins and minerals. Vitamins are good when you're sick.
+TEACHER: Vitamins are mentioned in the passage. But the question is about a person who is coughing. Does the passage mention coughs anywhere?
+STUDENT: Oh, I didn't look for that. Yes, it says it helps ease coughs.
+TEACHER: Good. Read that whole sentence and the one before it. What kind of problems does it say chocolate helps?
+STUDENT: Respiratory problems and coughs.
+TEACHER: So which choice best explains why chocolate is good advice for someone coughing?
+STUDENT: a, dark chocolate helps respiratory problems, because the passage says it helps ease coughs and respiratory concerns.
+TEACHER: Correct! When a question has a specific detail like 'coughs,' search for that detail in the passage first.",,,,,,
+philiri_g7_fil_pre_A_q6_distracted_r0,fil,distracted,Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano ang maaaring mangyari kung hindi ipagbawal ang maling paraan ng pangingisda?
+a. Mauubos ang mga isda sa dagat.
+b. Mawawalan ng hanapbuhay ang mga mangingisda.
+c. Matatakot na gumamit ng pampasabog ang mga tao.
+d. Maraming gagamit ng tamang paraan ng pangingisda.
+
+Ma'am, napanood ko po sa YouTube ang coral reefs, ang ganda po! Ay, ano po ulit ang tanong?
+TEACHER: Ang ganda nga nila! At may kinalaman sila sa tanong natin. Ano raw ang mangyayari kung hindi ipagbawal ang maling paraan ng pangingisda? Ano ang sinasabi ng teksto tungkol sa coral reefs?
+STUDENT: Sinisira po ng iba ang coral reefs, na tirahan ng mga isda.
+TEACHER: Tama. At ano naman ang nangyayari sa maliliit na isda dahil sa pampasabog?
+STUDENT: Namamatay po bago lumaki at dumami.
+TEACHER: Kung patay ang maliliit na isda at sira ang tirahan nila, at hindi ito pipigilan, ano ang mangyayari sa mga isda sa dagat?
+STUDENT: Mauubos po! A po, mauubos ang mga isda sa dagat, kasi walang dadami at wala silang tirahan.
+TEACHER: Magaling! Pinagsama mo ang dalawang detalye mula sa teksto para mahulaan ang mangyayari.",,,,,,
+philiri_g7_fil_pre_A_q3_careless_r0,fil,careless,Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Anong tanggapan ang nangunguna sa pagsugpo sa labag na batas na paraan ng pangingisda?
+a. Bureau of Food and Drug
+b. Metro Manila Development Authority
+c. Bureau of Fisheries and Aquatic Resources
+d. Department of Energy and Natural Resources
+
+D po, Department of Energy and Natural Resources. May 'natural resources' po kasi, eh ang isda ay natural resource.
+TEACHER: Magandang isipin iyan, pero tingnan natin kung binanggit ang tanggapang iyan sa teksto. Anong tanggapan ang nakasulat sa ikatlong talata?
+STUDENT: Bureau of Fisheries and Aquatic Resources po, BFAR.
+TEACHER: Tama. Ano raw ang ginagawa ng BFAR ayon sa pangungusap na iyon?
+STUDENT: Patuloy po silang gumagawa ng hakbang para masugpo ang mga mangingisdang lumalabag sa batas.
+TEACHER: Kaya aling tanggapan ang sagot, at bakit?
+STUDENT: C po, Bureau of Fisheries and Aquatic Resources, kasi sabi sa teksto, sila ang nangunguna sa pagsugpo sa mga lumalabag sa batas sa pangingisda.
+TEACHER: Magaling! Hindi sapat na may kahawig na salita; hanapin ang mismong pangalan sa teksto.",,,,,,
+philiri_g7_en_pre_A_q4_distracted_r0,en,distracted,"After we eat chocolate, which of these is responsible for making us feel good?","STUDENT: Teacher, can you help me with this question?
+
+After we eat chocolate, which of these is responsible for making us feel good?
+a. cacao
+b. theobroma
+c. serotonin
+d. antioxidants
+
+I feel good when I eat chocolate and also when it's lunch time. Is it antioxidants?
+TEACHER: Lunch time is a good feeling too! Let's check if antioxidants are about feelings. What does the passage say antioxidants do?
+STUDENT: They protect the heart. Oh, so it's not about feeling good.
+TEACHER: Right. Now look at the end of the passage. Is there a part that talks about how we feel?
+STUDENT: Yes, ""a feeling of well-being."" Wait, my seatmate is poking me. Okay. It says chocolate increases serotonin levels in the brain.
+TEACHER: Good, you found it even with a distraction. So which choice is responsible for making us feel good?
+STUDENT: c, serotonin, because the passage says it gives us a feeling of well-being.
+TEACHER: Very good! You matched 'feel good' in the question with 'feeling of well-being' in the passage.",,,,,,
+philiri_g7_en_pre_A_q8_distracted_r0,en,distracted,What does “address” mean in the second paragraph?,"STUDENT: Teacher, can you help me with this question?
+
+What does “address” mean in the second paragraph?
+a. to locate
+b. to identify
+c. to deal with
+d. to recognize
+
+Address like my home address? Is it a, to locate?
+TEACHER: That's the meaning we usually use, but words can mean different things. Find 'address' in the second paragraph. What sentence is it in?
+STUDENT: ""It helps address respiratory problems."" Wait, can I go to the CR after this?
+TEACHER: Sure, right after. Try putting 'locate' in the sentence: 'it helps locate respiratory problems.' Does that make sense?
+STUDENT: Not really. Chocolate doesn't find problems.
+TEACHER: Good. Try the other choices in that sentence. Which one makes the most sense with what chocolate does?
+STUDENT: 'It helps deal with respiratory problems.' That makes sense, like it helps fix coughs. So c, to deal with.
+TEACHER: Very good! Replacing the word with each choice is a great way to find the meaning from context. You can go to the CR now.",,,,,,
+philiri_g7_en_pre_A_q4_answer_seeker_r0,en,answer_seeker,"After we eat chocolate, which of these is responsible for making us feel good?","STUDENT: Teacher, can you help me with this question?
+
+After we eat chocolate, which of these is responsible for making us feel good?
+a. cacao
+b. theobroma
+c. serotonin
+d. antioxidants
+
+Can you just give me the answer? I don't know science words.
+TEACHER: You don't need to know science words for this one, because the passage explains it. Which part of the passage talks about how we feel?
+STUDENT: Where? Can you show me?
+TEACHER: Try the very last sentence of the passage. What feeling does it mention?
+STUDENT: ""This is what gives us a feeling of well-being."" What's 'this'?
+TEACHER: Great question. Look at the sentence just before it. What is 'this' pointing back to?
+STUDENT: Serotonin levels in the brain! So serotonin gives us a good feeling. The answer is c, serotonin, because the passage says it gives us a feeling of well-being.
+TEACHER: You got it on your own by asking what 'this' means, and that's a smart reading habit.",,,,,,
+philiri_g7_fil_pre_A_q1_careless_r0,fil,careless,Ano-anong isda ang ipinapadala sa ibang bansa?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Ano-anong isda ang ipinapadala sa ibang bansa?
+a. dilis at tawilis
+b. tilapia at bangus
+c. tuna at lapu-lapu
+d. galunggong at bisugo
+
+Bangus po, b. Kasi bangus po ang pinakasikat na isda sa atin.
+TEACHER: Sikat nga ang bangus! Pero ang tanong ay tungkol sa isdang ipinapadala sa ibang bansa. Saang bahagi ng teksto binanggit ang ibang bansa?
+STUDENT: Sa ikalawang talata po, Hongkong at Taiwan.
+TEACHER: Tama. Basahin mo ang kasunod na pangungusap. Anong mga isda ang sinabing dinadala sa mga bansang iyon?
+STUDENT: Tuna at lapu-lapu po. Wala pala pong bangus doon.
+TEACHER: Magaling na napansin mo iyan. Kaya ano ang sagot mo, at ano ang patunay?
+STUDENT: C po, tuna at lapu-lapu, kasi sabi sa teksto, iyon ang dinadala natin sa Hongkong at Taiwan.
+TEACHER: Mahusay! Hinanap mo ang mismong bahagi ng teksto sa halip na manghula batay sa kilalang isda.",,,,,,
+philiri_g7_en_pre_A_q8_right_no_reason_r0,en,right_no_reason,What does “address” mean in the second paragraph?,"STUDENT: Teacher, can you help me with this question?
+
+What does “address” mean in the second paragraph?
+a. to locate
+b. to identify
+c. to deal with
+d. to recognize
+
+c, to deal with.
+TEACHER: Correct choice, but how do you know? What clue in the passage tells you that?
+STUDENT: I don't know, it just sounds right.
+TEACHER: Let's test it. Read the sentence with 'address' and put 'to deal with' in its place. How does it sound?
+STUDENT: 'It helps deal with respiratory problems.' Yes, it makes sense.
+TEACHER: Now try 'identify' in the same sentence. Does chocolate identify respiratory problems?
+STUDENT: No, chocolate can't identify problems. It helps fix them, like the next sentence says it eases coughs. That's why it's c.
+TEACHER: Now you have real proof: you tested the choices in the sentence and used the next sentence as a clue.",,,,,,
+philiri_g7_fil_pre_A_q2_right_no_reason_r0,fil,right_no_reason,Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?,"STUDENT: Ma'am/Sir, pwede po ba ninyo akong tulungan sa tanong na ito?
+
+Alin sa sumusunod ang paraan ng pangingisda na ipinagbabawal?
+a. pamimingwit
+b. paggamit ng lambat
+c. ang paraang pagbubuslo
+d. paggamit ng pampasabog
+
+D po, pampasabog.
+TEACHER: Mabilis ka! Saang bahagi ng teksto mo nakita na mali iyan?
+STUDENT: Alam ko lang po na bawal iyon.
+TEACHER: Hanapin natin ang patunay. Sa ikalawang talata, ano ang sinabi tungkol sa mga mangingisdang gumagamit ng pampasabog?
+STUDENT: Inaabuso po nila ang kasaganahan. Gumagamit sila ng pampasabog at lason para makahuli ng maraming isda.
+TEACHER: Magaling. Ano raw ang nangyayari dahil dito?
+STUDENT: Namamatay po ang maliliit na isda na dapat sana ay lalaki pa. Kaya D po, kasi sinasabi ng teksto na pang-aabuso iyon at nakasisira sa isda.
+TEACHER: Ngayon may patunay na ang sagot mo mula sa teksto. Ganyan ang mahusay na mambabasa.",,,,,,

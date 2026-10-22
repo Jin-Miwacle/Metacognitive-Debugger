@@ -378,6 +378,9 @@ function partnerPayload(mode, t, message) {
   return {
     mode, problem: t.problem, problem_text: t.problemText || null,
     passage: t.text, paragraph: t.paragraph,
+    // the whole reading, so the backend's grounding rules can check names and
+    // quotes against all of it, not just the paragraph around the selection
+    full_text: reader.innerText.trim().slice(0, 20000),
     goal: state.goal && state.goal.text, goal_hint: t.goalHint || null,
     support: state.support.level, message: message || null,
     // 'auto' means let the backend detect the passage's language itself;
@@ -507,16 +510,24 @@ function showGoalPopup() {
 }
 
 /* ---------- Text selection -> Debug ---------- */
-let selTimer = null;
+let selTimer = null, pointerDown = false;
 document.addEventListener('selectionchange', () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(captureSelection, 350);
 });
+document.addEventListener('pointerdown', () => { pointerDown = true; });
+document.addEventListener('pointerup', () => {
+  pointerDown = false;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(captureSelection, 50);
+});
 function captureSelection() {
+  if (pointerDown) return;
   const sel = getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return;
   const range = sel.getRangeAt(0);
   if (!reader.contains(range.commonAncestorContainer)) return;
+  if (snapToWords(range)) { sel.removeAllRanges(); sel.addRange(range); return; }
   const text = sel.toString().replace(/\s+/g, ' ').trim();
   if (text.length < 2) return;
   const pA = closestP(range.startContainer), pB = closestP(range.endContainer);
@@ -524,6 +535,32 @@ function captureSelection() {
   state.pending = pA === pB ? { text, paragraph: pA ? pA.textContent : '', range: range.cloneRange() } : null;
   setTab('debug');
   renderDebug();
+}
+/* Moves the range's ends out to word boundaries and in past any spaces at the
+   edges. Letters include ñ and accents; an apostrophe or hyphen counts as part
+   of a word only between letters (Mandy's, pag-asa). Works within the text
+   node at each end, which covers the reader's plain paragraphs. Returns
+   whether the range changed. */
+const WORD_CH = /[\p{L}\p{N}\p{M}]/u, JOIN_CH = /['’\-]/;
+function snapToWords(range) {
+  const before = [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+  const inWord = (s, i) => i >= 0 && i < s.length &&
+    (WORD_CH.test(s[i]) || (JOIN_CH.test(s[i]) && WORD_CH.test(s[i - 1] || '') && WORD_CH.test(s[i + 1] || '')));
+  const sNode = range.startContainer, eNode = range.endContainer;
+  if (sNode.nodeType === 3) {
+    const s = sNode.data; let i = range.startOffset;
+    while (i < s.length && /\s/.test(s[i]) && !(sNode === eNode && i >= range.endOffset)) i++;
+    while (inWord(s, i - 1) && inWord(s, i)) i--;
+    range.setStart(sNode, i);
+  }
+  if (eNode.nodeType === 3) {
+    const s = eNode.data; let j = range.endOffset;
+    while (j > 0 && /\s/.test(s[j - 1]) && !(sNode === eNode && j <= range.startOffset)) j--;
+    while (inWord(s, j) && inWord(s, j - 1)) j++;
+    range.setEnd(eNode, j);
+  }
+  const after = [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+  return before.some((v, k) => v !== after[k]);
 }
 function closestP(node) {
   const el = node.nodeType === 1 ? node : node.parentElement;
@@ -652,9 +689,11 @@ function wrapRange(range, id) {
 async function sendFollowup(id, message) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.attempts = (t.attempts || 0) + 1;
-  // After a couple of follow-ups with no resolution, stop asking another
-  // question and have the coach just explain the key idea directly.
-  const mode = t.attempts >= 2 ? 'giveup' : 'followup';
+  // The backend decides when to stop asking and explain the key idea
+  // directly (after a few real attempts; questions don't count), and reports
+  // it back as mode "giveup". Forcing it here by count made the second reply
+  // a give-up even when it was a fair answer to the coach's question.
+  const mode = 'followup';
   const payload = partnerPayload(mode, t, message);
   t.msgs.push({ from: 'you', text: message });
   t.busy = true; t.msgs.push({ from: 'ai', text: 'Thinking…', typing: true });
@@ -662,7 +701,7 @@ async function sendFollowup(id, message) {
   renderDebug();
   const r = await askPartner(payload);
   t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
-  if (mode === 'giveup') t.gaveUp = true;
+  if (r.mode === 'giveup') t.gaveUp = true;
   // The backend reports mode "success" when the student's reply shows they
   // have understood this spot. Closing the thread on that is the whole point
   // of the signal: otherwise a spot the student clearly got stays "open"
