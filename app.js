@@ -300,7 +300,7 @@ async function askPartner(payload) {
   await new Promise(r => setTimeout(r, 450));
   let reply;
   if (payload.mode === 'debug') reply = pick(DEMO_REPLIES[payload.problem] || DEMO_REPLIES.lost);
-  else if (payload.mode === 'giveup') reply = pick(DEMO_REPLIES.giveup);
+  else if (payload.mode === 'giveup' || payload.mode === 'explain') reply = pick(DEMO_REPLIES.giveup);
   else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
   else reply = pick(DEMO_REPLIES.followup);
   // Offline replies carry the mode the frontend asked for, so the ladder
@@ -535,7 +535,11 @@ function renderDebug() {
         <div class="row" style="margin-top:8px">
           <button class="btn alt" type="button" data-act="resolve" data-id="${t.id}">Makes sense now</button>
           ${t.gaveUp ? '' : `<button class="btn alt" type="button" data-act="stuck" data-id="${t.id}">Still stuck</button>`}
-        </div>` : ''}
+        </div>
+        ${coachHasReplied(t) ? `
+        <div class="row" style="margin-top:6px">
+          <button class="ghost" type="button" data-act="explain" data-id="${t.id}">${t.explained ? "I still don't get it" : 'Explain it to me'}</button>
+        </div>` : ''}` : ''}
       ${t.status === 'resolved' && t.autoResolved ? `
         <div class="row" style="margin-top:8px; align-items:center">
           <span class="small">Marked as cleared up, since your answer showed you had it.</span>
@@ -566,6 +570,7 @@ $('#p-debug').addEventListener('click', e => {
   const id = +b.dataset.id;
   if (b.dataset.act === 'resolve') setStatus(id, 'resolved');
   if (b.dataset.act === 'stuck') markStuck(id);
+  if (b.dataset.act === 'explain') askHintOrAnswer(id);
   // Undoing an automatic close. The thread goes back to open and the reply
   if (b.dataset.act === 'reopen') {
     const t = state.threads.find(x => x.id === id);
@@ -636,6 +641,70 @@ function setStatus(id, status, how = 'student') {
   dbUpdateDebugStatus(t);
   renderDebug();
 }
+/* True once the coach has actually said something in this thread. The explain
+   option only appears after that, so a student sees the first question before
+   they can ask to be told. */
+function coachHasReplied(t) {
+  return (t.msgs || []).some(m => m.from === 'ai' && !m.typing);
+}
+
+/* Pressing the explain button offers the Socratic route one more time before
+   the answer. Students who reach for the answer often just want it easier, and
+   which one they pick is worth recording. */
+function askHintOrAnswer(id) {
+  const t = state.threads.find(x => x.id === id); if (!t || t.busy) return;
+  let dlg = $('#explainDlg');
+  if (!dlg) {
+    dlg = document.createElement('dialog');
+    dlg.id = 'explainDlg';
+    document.body.appendChild(dlg);
+  }
+  dlg.innerHTML = `
+    <h3 style="margin:0 0 6px">Want a hint first, or the answer?</h3>
+    <p class="small" style="margin:0 0 14px">A hint points you to the part of the text that helps.
+    The answer explains it outright.</p>
+    <div class="row">
+      <button class="btn" type="button" id="exHint">Give me a hint</button>
+      <button class="btn alt" type="button" id="exAnswer">Just explain it</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" type="button" id="exBack">Back to trying</button>
+    </div>`;
+  const close = () => { try { dlg.close(); } catch (e) {} };
+  $('#exHint', dlg).addEventListener('click', () => {
+    close(); logEvent('explain_offer', { id, chose: 'hint' }); markStuck(id);
+  });
+  $('#exAnswer', dlg).addEventListener('click', () => {
+    close(); logEvent('explain_offer', { id, chose: 'answer' }); explainThread(id);
+  });
+  $('#exBack', dlg).addEventListener('click', () => {
+    close(); logEvent('explain_offer', { id, chose: 'back' });
+  });
+  try { dlg.showModal(); } catch (e) { explainThread(id); }
+}
+
+/* The student asking to be told outright. Recorded as its own event so the
+   rate can be reported, rather than hidden in free text. */
+async function explainThread(id) {
+  const t = state.threads.find(x => x.id === id); if (!t || t.busy) return;
+  t.explained = (t.explained || 0) + 1;
+  t.gaveUp = true;
+  t.busy = true;
+  const says = t.explained === 1
+    ? "I don't understand. Can you explain it?"
+    : "I still don't understand that explanation.";
+  t.msgs.push({ from: 'you', text: says });
+  t.msgs.push({ from: 'ai', text: 'Thinking…', typing: true });
+  logEvent('debug_explain', { id, times: t.explained });
+  renderDebug();
+  const r = await askPartner(partnerPayload('explain', t, says));
+  t.msgs = t.msgs.filter(m => !m.typing);
+  t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo });
+  t.busy = false;
+  renderDebug();
+  dbSaveTranscript(t);
+}
+
 async function markStuck(id) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.status = 'stuck'; t.busy = true; t.gaveUp = true;
