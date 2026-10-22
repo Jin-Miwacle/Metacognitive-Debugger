@@ -1,24 +1,4 @@
-/* CONFIG -- these two settings now live in config.js, which is the one
-   small file that differs between running on your own machine and a
-   deployed site. Editing a 2-line file at deploy time is a lot harder to
-   get wrong than editing this one. The defaults below apply only if an
-   older config.js is still in place and does not define them.
-
-   API_BASE is the backend's address. Three endpoints get called: POST
-   /partner (debug hints), POST /quiz (quiz questions), POST /checkin
-   (check-in prompts).
-
-   Two ways this goes wrong quietly, both worth knowing, because neither
-   shows an error. callBackend() returns null on any failure and the app
-   falls back to built-in demo answers, so the app keeps working and
-   simply stops being the real AI:
-
-   1. Pointing at localhost from a deployed site. "http://localhost:8000"
-      means the visitor's own machine, so it only ever works for whoever
-      is running the backend on the same computer.
-   2. Mixed content. If the site is served over https and API_BASE is
-      plain http, the browser blocks every call before it is sent. The
-      backend needs its own https address, not an IP with a port. */
+/* CONFIG */
 const CONFIG = Object.assign(
   { API_BASE: "http://localhost:8000", CHECKIN_EVERY_SEC: 90 },
   window.APP_CONFIG || {}
@@ -28,9 +8,7 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-/* Built-in practice readings -- plain text, blank line between paragraphs --
-   so both the Readings view and the Quizzes view (which has no reader open)
-   can use them without needing a teacher or the database at all. */
+/* Built-in practice readings */
 const DEMO_READINGS = [
   {
     id: 'demo-lamp',
@@ -84,7 +62,6 @@ const state = {
   checkin: {
     on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [],
     // Whether a check-in shows as a floating popup the moment it's ready, instead of
-    // only a quiet dot on the Monitor tab -- the popup used to be very easy to miss.
     popupOn: (() => { try { return localStorage.getItem('checkinPopupOn') !== 'off'; } catch (e) { return true; } })()
   },
   support: { score: 0, level: 'steady' },  // see nudgeSupport() below
@@ -94,7 +71,7 @@ const state = {
   startedAt: Date.now(),
   log: [],
   user: null,                  // { id, role, full_name } once logged in
-  reading: { id: null },       // the teacher reading this session is on (null = demo/pasted text)
+  reading: { id: null },
   pastedTitle: null,           // what the student called their own text, shown in History
   session: { id: null }        // the row in the "sessions" table for this reading attempt
 };
@@ -102,11 +79,7 @@ function logEvent(type, data = {}) {
   state.log.push({ t: new Date().toISOString(), type, ...data });
 }
 
-/* ---- Support level: makes goals/check-ins actually change the session ----
-   Score rises on a low-confidence goal, a "lost" check-in, or a stuck
-   thread; falls on "clear" or resolved. The level it maps to (steady /
-   closer / extra) speeds up check-ins, shows a banner, and rides along
-   to the backend as a hint. */
+/* ---- Support level: makes goals/check-ins actually change the session ---- */
 function nudgeSupport(delta) {
   const s = state.support;
   s.score = Math.max(0, Math.min(6, s.score + delta));
@@ -132,8 +105,7 @@ function updateSupportBanner() {
     ? 'Extra support: check-ins are more frequent while we work through this together.'
     : 'Checking in a little more often: a few spots have been tricky.';
 }
-/* Quick word-overlap check against the goal (stopwords stripped) -- no
-   AI call, so it still works offline. */
+/* Quick word-overlap check against the goal (stopwords stripped) */
 const STOPWORDS = new Set(['the','a','an','to','of','in','on','for','and','or','is','are','was','were','it','its','that','this','what','why','how','do','does','did','i','me','my','understand','about','with','as','be','at','so','not']);
 function keywordsOf(text) {
   return new Set((text.toLowerCase().match(/[a-z']+/g) || []).filter(w => w.length > 2 && !STOPWORDS.has(w)));
@@ -145,26 +117,9 @@ function goalOverlapWord(passage) {
   return null;
 }
 
-/* ---- Saving progress to the database ----
-   A "session" is one student's attempt at one reading, created on first
-   real use (a goal, a debug spot, a check-in) rather than the moment the
-   reading opens -- so just browsing doesn't clutter the teacher's data.
+/* ---- Saving progress to the database ---- */
 
-   A failed save still lets the session keep working locally, because losing
-   the reading mid-way would be worse for the student. But it is no longer
-   silent. Every write below reports through noteSaveFailure(), which warns
-   to the console as before, tells the student once, and leaves a marker in
-   the sidebar for the rest of the session.
-
-   The reason this matters more than a normal app: ensureSession() is the
-   first step of every other write, so one failed insert here turns all of
-   them into no-ops. Without a visible marker a student can read a whole
-   text, flag passages, work through hints and answer check-ins, and nothing
-   is recorded, with nobody finding out until the dashboard is opened later
-   and the session is not there. */
-
-/* What has failed to save this session. Not reset when a later save works:
-   the rows already lost stay lost, and that is what the marker is about. */
+/* What has failed to save this session */
 const saveHealth = { failures: 0, offline: false, last: '' };
 
 function renderSaveWarning() {
@@ -174,7 +129,6 @@ function renderSaveWarning() {
     box.id = 'saveWarning';
     box.className = 'save-warning';
     // The sidebar is on every signed-in view; fall back to the body so the
-    // marker still appears if the layout changes.
     ($('.sidebar-foot') || document.body).prepend(box);
   }
   const n = saveHealth.failures;
@@ -183,9 +137,7 @@ function renderSaveWarning() {
   box.title = saveHealth.last;
 }
 
-/* True when the database refused a write because a column a migration adds
-   is not there yet, as opposed to a real failure. Lets a save drop the new
-   field and go through rather than losing the whole row. */
+/* True when the database refused a write because a column a migration adds is not there yet, as */
 function isMissingColumn(error, column) {
   const m = (error && error.message) || '';
   return new RegExp("column .*" + column + ".* does not exist|'" + column + "' column|schema cache", 'i').test(m);
@@ -203,9 +155,7 @@ function noteSaveFailure(what, error) {
   renderSaveWarning();
 }
 
-/* The offline fallback is its own kind of quiet: the app keeps answering,
-   but from the built-in demo replies rather than the model, so a session
-   collected this way is not measuring the model at all. */
+/* The offline fallback is its own kind of quiet: the app keeps answering, but from the built-in demo */
 function noteOfflineFallback() {
   if (saveHealth.offline) return;
   saveHealth.offline = true;
@@ -223,14 +173,11 @@ async function ensureSession() {
     confidence: state.goal ? state.goal.confidence : null
   };
   // Only pasted text carries a title of its own. Sent separately so the
-  // retry below can drop it without touching anything else.
   if (!state.reading.id && state.pastedTitle) row.title = state.pastedTitle;
 
   let { data, error } = await supa.from('sessions').insert(row).select('id').single();
   if (error && row.title && isMissingColumn(error, 'title')) {
     // session_title_migration.sql has not been run. Losing the title is a
-    // small thing; losing the session would take the goal, every flagged
-    // passage and every check-in with it, so save it without the title.
     delete row.title;
     ({ data, error } = await supa.from('sessions').insert(row).select('id').single());
     console.warn('Saved this session without its title. Run session_title_migration.sql to keep names for pasted texts.');
@@ -258,9 +205,7 @@ async function dbUpdateDebugStatus(t) {
   const { error } = await supa.from('debug_events').update({ status: t.status }).eq('id', t.dbId);
   if (error) noteSaveFailure('the change to this flagged passage', error);
 }
-/* Saves the actual back-and-forth for this debug thread -- needs
-   hint_transcript_migration.sql run once. Without it the column doesn't
-   exist and this just fails quietly, same as any other save error. */
+/* Saves the actual back-and-forth for this debug thread */
 async function dbSaveTranscript(t) {
   if (!t.dbId) return;
   const transcript = t.msgs.filter(m => !m.typing).map(m => ({ from: m.from, text: m.text, demo: !!m.demo }));
@@ -293,10 +238,7 @@ const PROBLEMS = {
   connect: { label: 'Ideas don’t connect', sub: 'How does this link to before?' },
   why:     { label: 'Why did this happen?',   sub: 'Something is implied, not stated' }
 };
-/* A student whose trouble is none of the four types above types it into
-   the box under them instead. That is sent as problem = "other" with the
-   wording in problem_text, so "other" is a real problem key even though it
-   is deliberately not a button here. */
+/* A student whose trouble is none of the four types above types it into the box under them instead */
 
 /* ---------- Offline demo replies (used ONLY if the backend can't be reached) ---------- */
 const DEMO_REPLIES = {
@@ -328,7 +270,6 @@ const DEMO_REPLIES = {
     'That’s okay. This one is flagged so your teacher can see it. Break it down: what is the subject, what is it doing, and which earlier line does it depend on?'
   ],
   // Shown after a student has struggled through a couple of follow-ups in a
-  // row -- a more direct nudge instead of yet another open question.
   giveup: [
     'No worries -- here is the key idea plainly: focus on who is doing what in this sentence, and what changed right before it. Reread it once more with that in mind, then tell me if it clicks.',
     'That is okay, let us just walk through it directly: look at the subject of the sentence and the one earlier detail it depends on. Put those two together and see if it makes sense now.'
@@ -352,14 +293,7 @@ async function callBackend(path, body) {
   return null;
 }
 
-/* The backend reports which kind of turn it decided this was (debug,
-   followup, stuck, success, repeat) alongside the reply. That has to be
-   kept and sent back with the history: the backend works out how stuck a
-   student is by counting how many earlier coach turns were "stuck", so if
-   the history arrives without it the count is always zero, the escalation
-   stays on its first rung, and a student who keeps saying "I don't know"
-   is asked an easier question forever instead of eventually being given
-   the explanation. */
+/* The backend reports which kind of turn it decided this was */
 async function askPartner(payload) {
   const d = await callBackend('/partner', payload);
   if (d && d.reply) return { reply: d.reply, mode: d.mode || null, demo: false };
@@ -370,7 +304,6 @@ async function askPartner(payload) {
   else if (payload.mode === 'stuck') reply = pick(DEMO_REPLIES.stuck);
   else reply = pick(DEMO_REPLIES.followup);
   // Offline replies carry the mode the frontend asked for, so the ladder
-  // still behaves sensibly when the backend is unreachable.
   return { reply, mode: payload.mode || null, demo: true };
 }
 
@@ -378,16 +311,16 @@ function partnerPayload(mode, t, message) {
   return {
     mode, problem: t.problem, problem_text: t.problemText || null,
     passage: t.text, paragraph: t.paragraph,
+    // the whole reading, so the backend's grounding rules can check names and
+    full_text: reader.innerText.trim().slice(0, 20000),
     goal: state.goal && state.goal.text, goal_hint: t.goalHint || null,
     support: state.support.level, message: message || null,
     // 'auto' means let the backend detect the passage's language itself;
-    // anything else is an explicit override from the Progress tab toggle.
     response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage,
     history: t.msgs.filter(m => !m.typing).map(m => ({
       role: m.from === 'you' ? 'student' : 'coach',
       text: m.text,
       // the backend counts coach turns with mode "stuck" to decide how
-      // much help to give next, so this has to survive the round trip
       mode: m.mode || null
     }))
   };
@@ -437,9 +370,7 @@ function goalFormHtml(g) {
     </div>
     <div class="scale-cap"><span>Not at all</span><span>Very well</span></div>`;
 }
-/* Shared by the Goal tab and the start-of-session popup, so the two never
-   drift out of sync. `scope` is the element the form lives in; `onDone`
-   runs after the goal is saved (closing the popup, switching tabs, etc). */
+/* Shared by the Goal tab and the start-of-session popup, so the two never drift out of sync */
 function wireGoalForm(scope, g, onDone) {
   let conf = g ? g.confidence : null;
   $$('#conf button', scope).forEach(b => b.addEventListener('click', () => {
@@ -454,8 +385,6 @@ function wireGoalForm(scope, g, onDone) {
     if (state.session.id) dbUpdateSession({ goal: text, confidence: conf });
     else ensureSession();
     // Low confidence starts check-ins closer together; high confidence starts
-    // relaxed. This has to run before startCheckins(), or the first countdown
-    // is set from the old level and never reflects what they just told us.
     nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
     if (!state.checkin.on) startCheckins();
     if (onDone) onDone();
@@ -477,9 +406,7 @@ function renderGoal() {
   $('#setGoal', el).addEventListener('click', save);
 }
 
-/* ---- Goal popup: shown once per session the moment a reading opens, so
-   setting a purpose isn't something a student can just scroll past. The
-   Goal tab still exists for changing it later. ---- */
+/* ---- Goal popup: shown once per session the moment a reading opens, so setting a purpose isn't */
 function ensureGoalDialog() {
   let dlg = $('#goalDlg');
   if (dlg) return dlg;
@@ -507,16 +434,24 @@ function showGoalPopup() {
 }
 
 /* ---------- Text selection -> Debug ---------- */
-let selTimer = null;
+let selTimer = null, pointerDown = false;
 document.addEventListener('selectionchange', () => {
   clearTimeout(selTimer);
   selTimer = setTimeout(captureSelection, 350);
 });
+document.addEventListener('pointerdown', () => { pointerDown = true; });
+document.addEventListener('pointerup', () => {
+  pointerDown = false;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(captureSelection, 50);
+});
 function captureSelection() {
+  if (pointerDown) return;
   const sel = getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return;
   const range = sel.getRangeAt(0);
   if (!reader.contains(range.commonAncestorContainer)) return;
+  if (snapToWords(range)) { sel.removeAllRanges(); sel.addRange(range); return; }
   const text = sel.toString().replace(/\s+/g, ' ').trim();
   if (text.length < 2) return;
   const pA = closestP(range.startContainer), pB = closestP(range.endContainer);
@@ -524,6 +459,28 @@ function captureSelection() {
   state.pending = pA === pB ? { text, paragraph: pA ? pA.textContent : '', range: range.cloneRange() } : null;
   setTab('debug');
   renderDebug();
+}
+/* Moves the range's ends out to word boundaries and in past any spaces at the edges */
+const WORD_CH = /[\p{L}\p{N}\p{M}]/u, JOIN_CH = /['’\-]/;
+function snapToWords(range) {
+  const before = [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+  const inWord = (s, i) => i >= 0 && i < s.length &&
+    (WORD_CH.test(s[i]) || (JOIN_CH.test(s[i]) && WORD_CH.test(s[i - 1] || '') && WORD_CH.test(s[i + 1] || '')));
+  const sNode = range.startContainer, eNode = range.endContainer;
+  if (sNode.nodeType === 3) {
+    const s = sNode.data; let i = range.startOffset;
+    while (i < s.length && /\s/.test(s[i]) && !(sNode === eNode && i >= range.endOffset)) i++;
+    while (inWord(s, i - 1) && inWord(s, i)) i--;
+    range.setStart(sNode, i);
+  }
+  if (eNode.nodeType === 3) {
+    const s = eNode.data; let j = range.endOffset;
+    while (j > 0 && /\s/.test(s[j - 1]) && !(sNode === eNode && j <= range.startOffset)) j--;
+    while (inWord(s, j) && inWord(s, j - 1)) j++;
+    range.setEnd(eNode, j);
+  }
+  const after = [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+  return before.some((v, k) => v !== after[k]);
 }
 function closestP(node) {
   const el = node.nodeType === 1 ? node : node.parentElement;
@@ -533,12 +490,7 @@ function closestP(node) {
 /* ---------- Debug tab ---------- */
 function shorten(s, n = 90) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
-/* What the tag on an open thread says. For the four fixed types that's their
-   label. For a typed one it's the student's own wording, which tells them (and
-   the teacher reading it back later) far more than the word "Other" would.
-   The fallback matters: a thread restored from an older session may carry a
-   problem key this build no longer has, and a bare PROBLEMS[key].label throws
-   on that and takes the whole Debug tab down with it. */
+/* What the tag on an open thread says */
 function threadProblemLabel(t) {
   if (t.problem === 'other' && t.problemText) return shorten(t.problemText, 48);
   return (PROBLEMS[t.problem] || PROBLEMS.lost).label;
@@ -615,8 +567,6 @@ $('#p-debug').addEventListener('click', e => {
   if (b.dataset.act === 'resolve') setStatus(id, 'resolved');
   if (b.dataset.act === 'stuck') markStuck(id);
   // Undoing an automatic close. The thread goes back to open and the reply
-  // box comes back, and the reopen is logged, so a coach that closes threads
-  // too eagerly shows up in the data instead of hiding as a clean resolve.
   if (b.dataset.act === 'reopen') {
     const t = state.threads.find(x => x.id === id);
     if (t) { t.autoResolved = false; setStatus(id, 'open'); }
@@ -652,9 +602,8 @@ function wrapRange(range, id) {
 async function sendFollowup(id, message) {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.attempts = (t.attempts || 0) + 1;
-  // After a couple of follow-ups with no resolution, stop asking another
-  // question and have the coach just explain the key idea directly.
-  const mode = t.attempts >= 2 ? 'giveup' : 'followup';
+  // The backend decides when to stop asking and explain the key idea
+  const mode = 'followup';
   const payload = partnerPayload(mode, t, message);
   t.msgs.push({ from: 'you', text: message });
   t.busy = true; t.msgs.push({ from: 'ai', text: 'Thinking…', typing: true });
@@ -662,14 +611,8 @@ async function sendFollowup(id, message) {
   renderDebug();
   const r = await askPartner(payload);
   t.msgs = t.msgs.filter(m => !m.typing); t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
-  if (mode === 'giveup') t.gaveUp = true;
+  if (r.mode === 'giveup') t.gaveUp = true;
   // The backend reports mode "success" when the student's reply shows they
-  // have understood this spot. Closing the thread on that is the whole point
-  // of the signal: otherwise a spot the student clearly got stays "open"
-  // until they remember to press a button, and an open spot looks the same
-  // as an abandoned one in the teacher dashboard and in the 3.6.1 counts.
-  // A backend that does not send a mode leaves r.mode undefined, so this is
-  // simply inert there and the buttons still work as before.
   if (r.mode === 'success' && t.status === 'open' && !r.demo) {
     t.autoResolved = true;
     setStatus(id, 'resolved', 'auto');   // re-renders
@@ -678,12 +621,7 @@ async function sendFollowup(id, message) {
   }
   dbSaveTranscript(t);
 }
-/* `how` records who decided: "student" when they pressed a button, "auto"
-   when the backend classified their reply as understanding it. Both end up
-   as status "resolved", and the resolved counts are evaluation data, so the
-   log has to keep them apart. A thread can also come back to "open", which
-   the old version could not express: anything that was not "resolved" was
-   logged as stuck and pushed the support level up. */
+/* `how` records who decided: "student" when they pressed a button, "auto" when the backend classified */
 function setStatus(id, status, how = 'student') {
   const t = state.threads.find(x => x.id === id); if (!t) return;
   t.status = status;
@@ -705,12 +643,6 @@ async function markStuck(id) {
   logEvent('debug_stuck', { id });
   dbUpdateDebugStatus(t);
   // Pressing "Still stuck" has to reach the backend as something the
-  // student said. The backend decides what kind of turn this is from
-  // ask.message, and its first branch is "no message means a fresh first
-  // hint" -- so with an empty message this button produced an opening
-  // hint rather than the escalation it exists for. Recording it as a
-  // student line also keeps the saved transcript faithful, which matters
-  // because that transcript is evaluation data.
   const stuckSays = "I'm still stuck.";
   t.msgs.push({ from: 'you', text: stuckSays });
   const r = await askPartner(partnerPayload('stuck', t, stuckSays));
@@ -749,9 +681,6 @@ async function fireCheckin() {
   updateBadges();
   if (currentTab() === 'monitor') renderCheckin();
   // A popup is more likely to actually get seen than a dot on a tab the
-  // student isn't looking at -- that was the main complaint about check-ins.
-  // Always show it (even on the Monitor tab itself) so testing via "Ask me
-  // now" is never a silent no-op.
   if (c.popupOn) showCheckinPopup();
 }
 function renderCheckin() {
@@ -792,8 +721,7 @@ function renderCheckin() {
   updateCountdown();
   updateBadges();
 }
-/* Shared by the Monitor-tab card and the floating popup. `onAfter` lets
-   the popup close itself once answered; the tab card just re-renders. */
+/* Shared by the Monitor-tab card and the floating popup */
 function checkinCardHtml(prompt) {
   return `
     <b>${esc(prompt)}</b>
@@ -835,9 +763,7 @@ function drawCheckinCard() {
     }
   });
 }
-/* Floating, non-blocking popup -- sits in the corner so a student can keep
-   reading, answer right there, or dismiss it and answer later from the
-   Monitor tab (the dot badge stays on until it's answered). */
+/* Floating, non-blocking popup */
 function ensureCheckinPopupHost() {
   let host = $('#checkinPopupHost');
   if (!host) {
@@ -947,9 +873,7 @@ function resetSession() {
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
 }
-/* "End session" leaves this reading entirely and returns to the picker
-   (distinct from "Start over", which clears progress but stays on the
-   same text) -- what gets saved is already saved either way. */
+/* "End session" leaves this reading entirely and returns to the picker */
 function endSession() {
   if (!confirm('End this reading session and go back to all readings?')) return;
   resetSession();
@@ -965,8 +889,7 @@ function paragraphsToHtml(raw) {
   return raw.split(/\n\s*\n/).map(p => `<p>${esc(p.replace(/\s*\n\s*/g, ' ').trim())}</p>`).join('');
 }
 
-/* ---------- Use your own text: one dialog, shared by the Readings and
-   Quizzes pickers. pasteTarget says which one is currently open. ---------- */
+/* ---------- */
 let pasteTarget = 'reader';
 function openPasteDialog(target) {
   pasteTarget = target;
@@ -974,8 +897,7 @@ function openPasteDialog(target) {
   $('#pasteDlg').showModal();
 }
 
-/* The name the student gave their own text. Kept on state so the session row,
-   the reader heading and History all show the same thing. */
+/* The name the student gave their own text */
 function pastedTitleOrDefault() {
   const typed = ($('#pasteTitle') ? $('#pasteTitle').value : '').trim();
   return typed.slice(0, 120) || 'Your text';
@@ -993,7 +915,6 @@ $('#pasteFile').addEventListener('change', async (e) => {
     const text = await extractTextFromFile(file);
     $('#pasteText').value = text;
     // Only when they have not named it themselves, so an upload never
-    // overwrites a title they typed on purpose.
     const titleBox = $('#pasteTitle');
     if (titleBox && !titleBox.value.trim()) {
       titleBox.value = file.name.replace(/\.[^.]+$/, '').slice(0, 120);
@@ -1005,11 +926,7 @@ $('#pasteFile').addEventListener('change', async (e) => {
     msg.textContent = err.message || 'Could not read that file.';
   }
 });
-/* Listen on the form's submit rather than the button's click. Cancel used to
-   be the first submit button in this form, so once the dialog gained a text
-   field, pressing Enter in it submitted through Cancel and quietly closed
-   everything without loading the text. Submit covers Enter and the button
-   both; Cancel is now an ordinary button that only closes. */
+/* Listen on the form's submit rather than the button's click */
 $('#pasteCancel').addEventListener('click', () => $('#pasteDlg').close('cancel'));
 $('#pasteDlg').querySelector('form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -1032,12 +949,12 @@ $('#pasteDlg').querySelector('form').addEventListener('submit', (e) => {
   }
 });
 
-/* =====================================================================
-   Sidebar navigation: Readings <-> Quizzes <-> Settings
-   Each nav button's data-view matches a <section id="<name>View">, so
-   adding another section later just means adding another button.
-   ===================================================================== */
+/* Sidebar navigation: Readings <-> Quizzes <-> Settings Each nav button's data-view matches a */
 function showView(name) {
+  if (!document.getElementById(name + 'View')) {
+    showToast('That screen is missing from this page. The index.html on the server is older than app.js.', 'bug');
+    return;
+  }
   $$('.side-link').forEach(b => {
     const active = b.dataset.view === name;
     b.classList.toggle('active', active);
@@ -1051,44 +968,150 @@ function showView(name) {
 }
 $$('.side-link').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 
-/* CLASSES: join a teacher's class with a code. Visible readings are
-   filtered to general readings plus classes you've joined in
-   getVisibleReadings() above -- that's enforced in this query, not by a
-   Row Level Security policy, so it's only as strong as this code path
-   (every reading fetch should go through getVisibleReadings(), never a
-   raw .from('readings') select). */
+/* CLASSES: join a teacher's class with a code */
+let openClassId = null;
+
 async function renderClassesView() {
   const el = $('#classesPane');
+  if (!el) {
+    showToast('The Classes screen is missing from this page. The index.html on the server is older than app.js.', 'bug');
+    return;
+  }
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
+  try {
+    if (openClassId) await renderClassDetail(el, openClassId);
+    else await renderClassesViewInner(el);
+  } catch (err) {
+    el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">Could not load your classes: ${esc((err && err.message) || String(err))}</p>`;
+  }
+}
 
-  const { data: memberships, error } = await supa
-    .from('class_members')
-    .select('class_id, joined_at, classes(id, name, teacher_id)')
-    .eq('student_id', state.user.id);
+async function renderClassDetail(el, classId) {
+  const backBtn = '<button class="ghost" id="clsBack" type="button">&larr; All classes</button>';
+  const wireBack = () => {
+    const b = $('#clsBack', el);
+    if (b) b.addEventListener('click', () => { openClassId = null; renderClassesView(); });
+  };
 
-  if (error) {
-    el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">${esc(error.message)}</p>`;
+  const { data: cls, error: clsErr } = await supa
+    .from('classes').select('id, name, teacher_id').eq('id', classId).maybeSingle();
+
+  if (clsErr || !cls) {
+    el.innerHTML = `<div class="row">${backBtn}</div>
+      <h1>Class</h1>
+      <p class="small" style="color:var(--bug)">Could not open that class: ${esc(clsErr ? clsErr.message : 'it may have been deleted.')}</p>`;
+    wireBack();
     return;
   }
 
-  // Look up each class's teacher name separately -- classes and profiles
-  // aren't directly linked as far as the database schema goes, so this
-  // can't be fetched in the same query.
-  const teacherIds = [...new Set((memberships || []).map(m => m.classes && m.classes.teacher_id).filter(Boolean))];
+  let teacherName = 'Teacher';
+  if (cls.teacher_id) {
+    const { data: t } = await supa.from('profiles').select('full_name').eq('id', cls.teacher_id).maybeSingle();
+    if (t && t.full_name) teacherName = t.full_name;
+  }
+
+  const SEL = 'id, title, body, created_at';
+  let forClass = [], general = [], degraded = false, loadErr = null;
+
+  let res = await supa.from('readings').select(SEL)
+    .eq('class_id', classId).order('created_at', { ascending: false });
+
+  if (res.error && isMissingColumn(res.error, 'class_id')) {
+    degraded = true;
+    res = await supa.from('readings').select(SEL)
+      .eq('teacher_id', cls.teacher_id).order('created_at', { ascending: false });
+  }
+  if (res.error) loadErr = res.error; else forClass = res.data || [];
+
+  if (!degraded && !loadErr && cls.teacher_id) {
+    const g = await supa.from('readings').select(SEL)
+      .eq('teacher_id', cls.teacher_id).is('class_id', null)
+      .order('created_at', { ascending: false });
+    if (!g.error) general = g.data || [];
+  }
+
+  let main;
+  if (loadErr) {
+    main = `<p class="small" style="color:var(--bug)">Could not load this class's readings: ${esc(loadErr.message)}</p>`;
+  } else if (forClass.length) {
+    main = readingCardsHtml(forClass, BOOK_ICON);
+  } else {
+    main = `<p class="small">No readings have been added to this class yet.</p>`;
+  }
+
+  el.innerHTML = `
+    <div class="row">${backBtn}</div>
+    <h1 style="margin-top:10px">${esc(cls.name)}</h1>
+    <p class="hint">Taught by ${esc(teacherName)}</p>
+    ${degraded ? `<p class="small" style="color:var(--bug)">Readings cannot be split by class yet, so this shows everything from this teacher. Run readings_class_id_migration.sql to fix that.</p>` : ''}
+    <h3 style="margin:22px 0 0">${degraded ? 'Readings from this teacher' : 'Readings for this class'}</h3>
+    ${main}
+    ${general.length ? `<h3 style="margin:28px 0 0">Also from this teacher</h3>
+    <p class="small" style="margin:4px 0 0">Not tied to one class, so every student of this teacher can read them.</p>
+    ${readingCardsHtml(general, BOOK_ICON)}` : ''}`;
+
+  wireBack();
+
+  $$('.lib-card[data-id]', el).forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
+    if (rErr || !r) {
+      el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`);
+      b.disabled = false;
+      return;
+    }
+    showView('readings');
+    enterReader({
+      title: r.title,
+      byline: 'Added by your teacher',
+      bodyHtml: paragraphsToHtml(r.body),
+      readingId: r.id
+    });
+  }));
+}
+
+async function renderClassesViewInner(el) {
+  const { data: memberships, error } = await supa
+    .from('class_members')
+    .select('class_id, joined_at')
+    .eq('student_id', state.user.id);
+
+  if (error) {
+    el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">Could not read your class list: ${esc(error.message)}</p>`;
+    return;
+  }
+
+  const classIds = [...new Set((memberships || []).map(m => m.class_id).filter(Boolean))];
+
+  let classRows = [];
+  if (classIds.length) {
+    const { data: cls, error: clsErr } = await supa
+      .from('classes').select('id, name, teacher_id').in('id', classIds);
+    if (clsErr) {
+      el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">Could not read the classes you joined: ${esc(clsErr.message)}</p>`;
+      return;
+    }
+    classRows = cls || [];
+  }
+
+  const teacherIds = [...new Set(classRows.map(c => c.teacher_id).filter(Boolean))];
   let teacherNames = {};
   if (teacherIds.length) {
     const { data: teachers } = await supa.from('profiles').select('id, full_name').in('id', teacherIds);
     (teachers || []).forEach(t => { teacherNames[t.id] = t.full_name || 'Teacher'; });
   }
 
-  const rows = (memberships || []).filter(m => m.classes).map(m => `
-    <div class="reading-row-card" data-class="${m.classes.id}">
+  const rows = classRows.map(c => `
+    <div class="reading-row-card" data-class="${c.id}" role="button" tabindex="0" style="cursor:pointer">
       <div>
-        <b>${esc(m.classes.name)}</b>
-        <div class="small">Taught by ${esc(teacherNames[m.classes.teacher_id] || 'Teacher')}</div>
+        <b>${esc(c.name)}</b>
+        <div class="small">Taught by ${esc(teacherNames[c.teacher_id] || 'Teacher')}</div>
       </div>
+      <span class="small" aria-hidden="true">View readings &rarr;</span>
       <button class="tiny danger" type="button" data-act="leave">Leave</button>
     </div>`).join('');
+
+  const orphaned = classIds.length - classRows.length;
 
   el.innerHTML = `
     <h1>Your classes</h1>
@@ -1104,7 +1127,8 @@ async function renderClassesView() {
     </div>
 
     ${rows ? `<div style="margin-top:18px; display:flex; flex-direction:column; gap:10px">${rows}</div>`
-           : '<p class="small" style="margin-top:16px">You haven\'t joined any classes yet. The demo story and pasting your own text still work either way.</p>'}`;
+           : '<p class="small" style="margin-top:16px">You haven\'t joined any classes yet. The demo story and pasting your own text still work either way.</p>'}
+    ${orphaned > 0 ? `<p class="small" style="margin-top:12px; color:var(--bug)">${orphaned} class${orphaned === 1 ? '' : 'es'} you joined could not be read back. Tell your teacher the class may have been deleted.</p>` : ''}`;
 
   $('#joinClassBtn').addEventListener('click', async () => {
     const codeInput = $('#joinCodeInput');
@@ -1122,7 +1146,22 @@ async function renderClassesView() {
     renderClassesView();
   });
 
-  el.querySelectorAll('[data-act="leave"]').forEach(btn => btn.addEventListener('click', async () => {
+  const openClass = (id) => { openClassId = id; renderClassesView(); };
+
+  el.querySelectorAll('[data-class][role="button"]').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="leave"]')) return;
+      openClass(card.dataset.class);
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      openClass(card.dataset.class);
+    });
+  });
+
+  el.querySelectorAll('[data-act="leave"]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     const row = btn.closest('[data-class]');
     if (!confirm("Leave this class? You'll lose access to that teacher's readings until you rejoin.")) return;
     const { error: leaveErr } = await supa.from('class_members').delete().eq('class_id', row.dataset.class).eq('student_id', state.user.id);
@@ -1132,10 +1171,7 @@ async function renderClassesView() {
   }));
 }
 
-/* HISTORY: every past session for this student, own data only -- row-level
-   security already scopes this to state.user.id, same as every other
-   student-side query, so no RPC is needed here (unlike the teacher-side
-   class drill-down, which has to read across students). */
+/* HISTORY: every past session for this student, own data only */
 async function renderHistoryView() {
   const el = $('#historyPane');
   el.innerHTML = `<h1>Your history</h1><p class="hint">Loading…</p>`;
@@ -1148,8 +1184,6 @@ async function renderHistoryView() {
     .order('created_at', { ascending: false });
 
   // Without session_title_migration.sql there is no title column, and asking
-  // for it fails the whole query. Fall back rather than showing an empty
-  // History: the names for pasted texts are missing, everything else is not.
   if (error && isMissingColumn(error, 'title')) {
     ({ data: sessions, error } = await supa
       .from('sessions')
@@ -1160,8 +1194,6 @@ async function renderHistoryView() {
 
   if (error) {
     // A missing column is a setup problem, not something the student did
-    // wrong, so say which migration fixes it instead of showing them the
-    // raw Postgres message and leaving them stuck.
     const needsMigration = /created_at|column .* does not exist/i.test(error.message);
     el.innerHTML = `<h1>Your history</h1><p class="small" style="color:var(--bug)">Could not load your history: ${esc(error.message)}${
       needsMigration ? '. Run sessions_created_at_migration.sql in Supabase to add the missing column.' : ''
@@ -1189,7 +1221,6 @@ async function renderHistoryView() {
     const st = statsFor(s.id);
     const when = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
     // A session points at a reading, or carries its own title for text the
-    // student pasted. Neither means the reading has since been deleted.
     const title = (s.readings && s.readings.title) || s.title || 'A pasted or deleted text';
     return `<div class="reading-row-card">
       <div>
@@ -1217,9 +1248,7 @@ function handleLogin(profile) {
   showReadingPicker();
 }
 
-/* =====================================================================
-   READINGS: library grid -> reader + side panel
-   ===================================================================== */
+/* READINGS: library grid -> reader + side panel */
 function readingCardsHtml(readings, iconSvg, opts = {}) {
   return `<div class="lib-grid">${readings.map(r => {
     const words = r.body.trim().split(/\s+/).length;
@@ -1236,36 +1265,57 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
     </button>`;
   }).join('')}</div>`;
 }
-/* Built-in demo readings reuse the same card markup -- they're shaped
-   the same as a database reading ({id, title, body}) so one function
-   can render both. */
+/* Built-in demo readings reuse the same card markup */
 function demoReadingObjs() { return DEMO_READINGS.map(d => ({ id: d.id, title: d.title, body: d.text })); }
 const BOOK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>`;
 
-/* Readings a student can actually see: general readings (class_id is
-   null, every teacher's "Add a reading" default) plus readings from
-   classes they've joined. Shared by the reading picker and the quiz
-   picker so both match the promise made on the Classes tab -- "only
-   students who join can see the readings you add". */
+/* Readings a student can actually see: general readings */
 async function getVisibleReadings() {
-  if (!state.user) return { data: [], error: null };
+  if (!state.user) return { data: [], error: null, joinedCount: 0 };
+
   const { data: memberships, error: memErr } = await supa
     .from('class_members').select('class_id').eq('student_id', state.user.id);
-  if (memErr) return { data: null, error: memErr };
-  const classIds = (memberships || []).map(m => m.class_id);
-  let query = supa.from('readings').select('id, title, body, created_at')
-    .not('teacher_id', 'is', null)   // built-in readings are listed separately
+  if (memErr) return { data: null, error: memErr, stage: 'membership', joinedCount: 0 };
+
+  const classIds = (memberships || []).map(m => m.class_id).filter(Boolean);
+
+  const base = () => supa.from('readings').select('id, title, body, created_at')
+    .not('teacher_id', 'is', null)
     .order('created_at', { ascending: false });
-  query = classIds.length ? query.or(`class_id.is.null,class_id.in.(${classIds.join(',')})`) : query.is('class_id', null);
-  return await query;
+
+  let res;
+  if (classIds.length) {
+    const list = classIds.map(id => '"' + id + '"').join(',');
+    res = await base().or('class_id.is.null,class_id.in.(' + list + ')');
+  } else {
+    res = await base().is('class_id', null);
+  }
+
+  if (res.error && isMissingColumn(res.error, 'class_id')) {
+    res = await base();
+    if (!res.error) res.degraded = 'class_id';
+  }
+
+  res.joinedCount = classIds.length;
+  res.stage = 'readings';
+  return res;
 }
 
-/* The built-in practice readings, from the database rather than the copies
-   below. Reading one from the database means the session is saved with a real
-   reading_id, so the work can be traced to a text and a teacher can see it.
-   If the database cannot be reached, the hardcoded copies are used instead
-   and everything still works, which is the whole point of keeping them.
-   Needs builtin_readings_migration.sql. */
+function readingsEmptyHtml(res, linkId) {
+  if (res.error) {
+    const where = res.stage === 'membership' ? 'your class list' : 'the readings';
+    return '<p class="small" style="color:var(--bug)">Could not load ' + where + ': '
+      + esc(res.error.message || 'unknown error') + '</p>';
+  }
+  if (!res.joinedCount) {
+    return '<p class="small">You have not joined a class yet. <a href="#" id="' + linkId
+      + '">Join a class</a> with the code from your teacher to see the readings they add.</p>';
+  }
+  return '<p class="small">Your class has no readings yet. Either your teacher has not added one, '
+    + 'or they saved it to a different class.</p>';
+}
+
+/* The built-in practice readings, from the database rather than the copies below */
 async function getBuiltInReadings() {
   const { data, error } = await supa
     .from('readings').select('id, title, body')
@@ -1285,13 +1335,13 @@ async function showReadingPicker() {
   picker.hidden = false;
   picker.innerHTML = `<h1>Choose a reading</h1><p class="hint">Loading…</p>`;
 
-  const { data: readings, error } = await getVisibleReadings();
+  const res = await getVisibleReadings();
+  const readings = res.data;
   const builtIn = await getBuiltInReadings();
 
-  const teacherGrid = (!error && readings && readings.length)
+  const teacherGrid = (!res.error && readings && readings.length)
     ? readingCardsHtml(readings, BOOK_ICON)
-    : `<p class="small">${error ? 'Could not load readings right now.'
-        : 'No readings from your classes yet. <a href="#" id="goToClasses">Join a class</a> to see what your teacher adds.'}</p>`;
+    : readingsEmptyHtml(res, 'goToClasses');
 
   picker.innerHTML = `
     <h1>Choose a reading</h1>
@@ -1309,8 +1359,6 @@ async function showReadingPicker() {
     const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
     if (rErr || !r) { picker.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
     // Both grids on this page render data-id cards, so the byline has to come
-    // from the row itself. A built-in reading has no teacher_id, and telling a
-    // student their teacher added it would be wrong.
     enterReader({
       title: r.title,
       byline: r.teacher_id ? 'Added by your teacher' : 'Built-in practice text',
@@ -1333,8 +1381,6 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   setReaderText(title, byline, bodyHtml);
   state.reading = { id: readingId };
   // Set after resetSession, which clears it. Only a text with no reading row
-  // behind it needs a title of its own; a real reading already has one, and
-  // storing a second copy would mean two that can disagree.
   state.pastedTitle = readingId ? null : title;
 
   $('#pickerPane').hidden = true;
@@ -1345,20 +1391,13 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   showGoalPopup();
 }
 
-/* =====================================================================
-   QUIZZES: its own top-level view, decoupled from the reading workspace.
-   Picking a reading here fetches its text directly from the database,
-   so a quiz can be taken without ever opening that reading in Readings.
-   ===================================================================== */
+/* QUIZZES: its own top-level view, decoupled from the reading workspace */
 let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
 
 async function ensureQuizSession() {
   if (quizCtx.sessionId) return quizCtx.sessionId;
   if (!state.user) return null;
   // kind: 'quiz' keeps this out of the reading-session counts. A quiz
-  // attempt has no goal, no flagged passages and no check-ins, so counting
-  // it as a reading session inflates every per-session figure the teacher
-  // dashboard and the evaluation rely on. Needs session_kind_migration.sql.
   const row = { student_id: state.user.id, reading_id: quizCtx.readingId, kind: 'quiz' };
   if (!quizCtx.readingId && quizCtx.isPasted && quizCtx.title) row.title = quizCtx.title;
 
@@ -1390,15 +1429,15 @@ async function renderQuizPicker() {
   const el = $('#quizzesPane');
   el.innerHTML = `<h1>Quizzes</h1><p class="hint">Loading…</p>`;
 
-  const { data: readings, error } = await getVisibleReadings();
+  const res = await getVisibleReadings();
+  const readings = res.data;
 
   const assigned = await getAssignedQuizzes();
   const builtIn = await getBuiltInReadings();
 
-  const teacherGrid = (!error && readings && readings.length)
+  const teacherGrid = (!res.error && readings && readings.length)
     ? readingCardsHtml(readings, QUIZ_ICON)
-    : `<p class="small">${error ? 'Could not load readings right now.'
-        : 'No readings from your classes yet. <a href="#" id="goToClassesQuiz">Join a class</a> to see what your teacher adds.'}</p>`;
+    : readingsEmptyHtml(res, 'goToClassesQuiz');
 
   el.innerHTML = `
     <h1>Quizzes</h1>
@@ -1443,11 +1482,7 @@ async function renderQuizPicker() {
   if (classesLink) classesLink.addEventListener('click', (e) => { e.preventDefault(); showView('classes'); });
 }
 
-/* Quizzes a teacher has assigned to a class this student has joined. Row
-   level security already limits the table to assigned quizzes in joined
-   classes, so there is nothing to filter here. Needs
-   teacher_quizzes_migration.sql; until that runs the table does not exist,
-   this returns nothing, and the section simply does not appear. */
+/* Quizzes a teacher has assigned to a class this student has joined */
 async function getAssignedQuizzes() {
   if (!state.user) return [];
   const { data, error } = await supa
@@ -1461,11 +1496,7 @@ async function getAssignedQuizzes() {
     .filter(z => z.n > 0);
 }
 
-/* Answers this student already gave on the assigned quiz now open. Only the
-   earliest answer to each question is kept, the same rule the teacher's
-   figures use, so what the student sees and what the teacher sees agree.
-   Needs quiz_stats_migration.sql for created_at and question_id; without it
-   this returns nothing and the quiz just opens blank. */
+/* Answers this student already gave on the assigned quiz now open */
 async function loadPreviousAnswers() {
   if (!quizCtx.quizId || !state.user) return;
   const { data, error } = await supa
@@ -1487,9 +1518,7 @@ async function loadPreviousAnswers() {
   });
 }
 
-/* An assigned quiz is answered exactly as the teacher assigned it, so its
-   questions are loaded rather than generated. Every student in the class
-   answers the same set, which is what makes their scores comparable. */
+/* An assigned quiz is answered exactly as the teacher assigned it, so its questions are loaded rather */
 async function openAssignedQuiz(quizId) {
   const el = $('#quizzesPane');
   el.innerHTML = `<h1>Quizzes</h1><p class="hint">Opening the quiz…</p>`;
@@ -1513,22 +1542,11 @@ async function openAssignedQuiz(quizId) {
     quizId: quiz.id, instructions: quiz.instructions
   };
   // Show what they answered before rather than a blank quiz. Only the first
-  // answer to each question counts, here and in the teacher's figures, so
-  // re-answering would only mislead them about their own score.
   await loadPreviousAnswers();
   renderQuizWorkspace();
 }
 
-/* How many questions a passage can carry. The same rule lives in teacher.html
-   and in main.py as a backstop, so all three agree: one question per 25 words,
-   in steps of five, never fewer than 5 or more than 20. A 150-word built-in
-   reading therefore offers 5 and nothing else.
-
-   The ceiling is not arbitrary. The model writes the whole quiz as one piece
-   of JSON, so a long one is likelier to be cut off mid-string, and the parse
-   is all or nothing: a truncated answer loses the entire quiz rather than the
-   last question. Short passages also run out of material for believable wrong
-   options, which is the failure that looks like a working quiz. */
+/* How many questions a passage can carry */
 const WORDS_PER_QUESTION = 25;
 const QUESTION_COUNTS = [5, 10, 15, 20];
 
@@ -1540,8 +1558,7 @@ function questionsSupported(words) {
                               Math.floor(Math.floor(words / WORDS_PER_QUESTION) / 5) * 5));
 }
 
-/* What the student picked on the "Make my quiz" screen. Kept outside quizCtx
-   so switching readings does not silently reset their choice. */
+/* What the student picked on the "Make my quiz" screen */
 const quizPrefs = { n: 5, kinds: 'mixed' };
 
 async function loadQuizQuestions() {
@@ -1554,7 +1571,6 @@ async function loadQuizQuestions() {
     n: Math.min(quizPrefs.n, supported),
     kinds: quizPrefs.kinds,
     // Follows the coach-language setting they already chose in Settings rather
-    // than asking the same question again here. 'auto' means follow the text.
     language: state.responseLanguage === 'auto' ? null : state.responseLanguage
   });
   if (d && Array.isArray(d.questions) && d.questions.length) {

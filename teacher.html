@@ -182,9 +182,6 @@ function showView(name) {
     b.setAttribute('aria-current', active ? 'page' : 'false');
   });
   // The admin nav button being hidden from non-admins is a CSS/markup
-  // convenience, not a real access control -- anyone can still call
-  // showView('admin') from the console, so this check (and the server
-  // rejecting admin_list_users() for non-admins) is what actually matters.
   if (name === 'admin' && !(currentProfile && currentProfile.role === 'admin')) {
     showToast("You don't have access to Admin.", 'bug');
     name = 'dashboard';
@@ -210,14 +207,11 @@ function makeJoinCode() {
   return code;
 }
 
-/* Labels matching the student-side wording in app.js, so a teacher sees
-   the same words a student picked, not raw database values. */
+/* Labels matching the student-side wording in app.js, so a teacher sees the same words a student */
 const DEBUG_PROBLEM_LABEL = { vocab: 'A word they didn’t know', lost: 'Lost the point', connect: 'Ideas didn’t connect', why: 'Why did this happen?', other: 'Described it themselves', unspecified: 'Not recorded' };
 const CHECKIN_LEVEL_LABEL = { clear: 'I follow it', fuzzy: 'A bit fuzzy', lost: 'I’m lost', unspecified: 'Other' };
 
-/* A compact "where are they getting stuck" summary for one class --
-   just enough to spot a pattern at a glance, not a full report. Shows
-   nothing if the class has no debug/check-in data yet. */
+/* A compact "where are they getting stuck" summary for one class */
 function classInsightsHtml(debugRows, checkinRows) {
   if (!debugRows.length && !checkinRows.length) return '';
   const bars = (rows, labels) => {
@@ -243,7 +237,6 @@ function classInsightsHtml(debugRows, checkinRows) {
 
 async function loadClasses() {
   // Leaving a class clears it, so a quiz started from the Dashboard asks which
-  // class it is for instead of quietly using the last one that was open.
   currentClass = null;
   const el = document.getElementById('classesPane');
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
@@ -254,7 +247,6 @@ async function loadClasses() {
     supa.rpc('teacher_checkin_stats')
   ]);
   // Both RPCs are a newer addition (teacher_dashboard_migration.sql) -- an
-  // older database without them just means no insights card, not a crash.
 
   if (error) {
     el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">${escapeHtml(error.message)}</p>`;
@@ -320,7 +312,6 @@ async function loadClasses() {
     loadClasses();
   }));
   // The whole card opens the class -- click anywhere that isn't a button
-  // inside it (the Delete button stops its own click from bubbling here).
   el.querySelectorAll('.class-card').forEach(card => {
     const open = () => openClassDetail(card.dataset.class);
     card.addEventListener('click', open);
@@ -328,11 +319,7 @@ async function loadClasses() {
   });
 }
 
-/* Drills into one class: each joined student and their progress across
-   this teacher's readings. Needs class_progress_migration.sql's
-   teacher_class_progress() RPC -- a teacher can't query other students'
-   sessions directly (row-level security), the same reason the class-wide
-   insight bars above go through an RPC instead of a plain select. */
+/* Drills into one class: each joined student and their progress across this teacher's readings */
 async function openClassDetail(classId) {
   const el = document.getElementById('classesPane');
   el.innerHTML = `<button class="ghost" id="classDetailBack" type="button">&larr; All classes</button><p class="hint">Loading…</p>`;
@@ -356,8 +343,6 @@ async function openClassDetail(classId) {
   const needsMigration = progErr && /function|does not exist|schema cache/i.test(progErr.message);
 
   // General class stats dashboard: totals across every joined student,
-  // plus the same "where they're getting stuck" bars shown on the class
-  // list card -- scoped to this one class.
   let dashboardHtml = '';
   if (!progErr && progressRows && progressRows.length) {
     const sum = (key) => progressRows.reduce((t, r) => t + Number(r[key] || 0), 0);
@@ -448,8 +433,7 @@ async function openClassDetail(classId) {
   }
 }
 
-/* One student's own summary within this class -- the same counts from
-   the class's student list, just blown up into a bigger standalone view. */
+/* One student's own summary within this class */
 function renderStudentDetail(cls, r) {
   const el = document.getElementById('classesPane');
   el.innerHTML = `
@@ -569,13 +553,11 @@ async function loadReadings(teacherId) {
   await loadReadingsInto(document.getElementById('readingList'), teacherId, null, 'No readings yet. Add your first one below.');
   loadBuiltInReadings(document.getElementById('builtInList'), {
     canManage: !!(currentProfile && currentProfile.role === 'admin'),
-    canQuiz: true   // this is a teacher's own dashboard, so there are classes to assign to
+    canQuiz: true
   });
 }
 
-/* Shared by the Dashboard's general-reading list and each class's own
-   reading list -- classId === null means "general" (class_id is null),
-   any other value scopes to that one class (class_id = classId). */
+/* Shared by the Dashboard's general-reading list and each class's own reading list */
 async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
   list.innerHTML = '<p class="small">Loading...</p>';
 
@@ -585,13 +567,9 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
   if (error) { list.innerHTML = `<p class="small" style="color:var(--bug)">${escapeHtml(error.message)}</p>`; return; }
   if (!readings.length) { list.innerHTML = `<p class="small">${escapeHtml(emptyMessage)}</p>`; return; }
 
-  // For each reading, count sessions and how many debug spots are open / resolved / still "stuck".
+  // For each reading, count sessions and how many debug spots are open / resolved / still "stu
   const cards = await Promise.all(readings.map(async (r) => {
     // Reading sessions only. A quiz attempt also creates a sessions row, so
-    // without this filter the count on this card disagrees with the tiles at
-    // the top of the class, which go through teacher_class_progress() and do
-    // filter. Needs session_kind_migration.sql; falls back to the old
-    // unfiltered count if that has not been run yet.
     let { data: sessions } = await supa.from('sessions')
       .select('id').eq('reading_id', r.id).eq('kind', 'reading');
     if (!sessions) {
@@ -607,18 +585,6 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
       });
     }
     // Quiz performance on this reading and nothing else. It goes through a
-    // function because a teacher cannot read other students' quiz_results
-    // directly, and the function scopes it twice: to this reading, and to
-    // quizzes this teacher made. That second part matters for the built-in
-    // readings, where several teachers can make a quiz from the same text and
-    // none of them should see another's class in this number.
-    //
-    // The class tiles stay as they are, counting every quiz in the class
-    // together. That is the general picture; this is the per-reading one.
-    //
-    // Needs reading_quiz_stats_migration.sql. Without it the card just leaves
-    // the figure out rather than showing a zero that would read as "nobody
-    // scored anything".
     let quizMeta = '';
     const { data: quizStats } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
     const qs = Array.isArray(quizStats) ? quizStats[0] : quizStats;
@@ -672,52 +638,61 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
 }
 
 
-/* ====================================================================
-   TEACHER-MADE QUIZZES
-
-   A teacher generates a quiz from one of their class readings, checks the
-   questions, edits or removes any that do not work, then assigns it. The
-   questions are saved, so every student in the class answers the same set
-   and the scores can be compared. Needs teacher_quizzes_migration.sql.
-   ==================================================================== */
+/* TEACHER-MADE QUIZZES A teacher generates a quiz from one of their class readings, checks the */
 
 let currentClass = null;   // set by openClassDetail, used by the quiz builder
 
-/* The rest of this page only talks to Supabase. Generating a quiz needs the
-   AI backend, the same address the student page uses, which lives in
-   config.js so it is set in one place at deploy time. */
+/* The rest of this page only talks to Supabase */
 const QUIZ_CONFIG = Object.assign(
   { API_BASE: 'http://localhost:8000' },
   window.APP_CONFIG || {}
 );
 
+const QUIZ_TIMEOUT_MS = 180000;
+
 async function generateQuizQuestions({ text, n, kinds, language }) {
   if (!QUIZ_CONFIG.API_BASE) throw new Error('No backend address is set. Add API_BASE to config.js.');
-  const r = await fetch(QUIZ_CONFIG.API_BASE.replace(/\/$/, '') + '/quiz', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, n, kinds, language: language === 'auto' ? null : language })
-  });
+  const base = QUIZ_CONFIG.API_BASE.replace(/\/$/, '');
+
+  if (location.protocol === 'https:' && base.startsWith('http://')) {
+    throw new Error('This page is on https but the backend address in config.js is http. '
+      + 'The browser blocks that before the request is sent. Use an https address for the backend.');
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), QUIZ_TIMEOUT_MS);
+
+  let r;
+  try {
+    r = await fetch(base + '/quiz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, n, kinds, language: language === 'auto' ? null : language }),
+      signal: ctrl.signal
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('The backend did not answer within ' + Math.round(QUIZ_TIMEOUT_MS / 1000)
+        + ' seconds. It may still be loading the model. Try again in a minute.');
+    }
+    throw new Error('Could not reach the backend at ' + base + '. '
+      + 'Check that it is running, that the tunnel address in config.js is the current one, '
+      + 'and that the browser console does not show a CORS error.');
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!r.ok) {
     let detail = '';
-    try { detail = (await r.json()).detail || ''; } catch (e) { /* error body wasn't JSON */ }
-    throw new Error(detail || `The backend answered with ${r.status}.`);
+    try { detail = (await r.json()).detail || ''; } catch (e) {}
+    throw new Error(detail || 'The backend answered with ' + r.status + '.');
   }
   const d = await r.json();
   if (!d.questions || !d.questions.length) throw new Error('The backend returned no questions.');
   return d.questions;
 }
 
-/* How many questions a passage can carry. The same rule lives in app.js for
-   the student's own quizzes and in main.py as a backstop, so all three agree:
-   one question per 25 words, in steps of five, never fewer than 5 or more
-   than 20. A 150-word built-in reading therefore offers 5 and nothing else.
-
-   The ceiling is not arbitrary. The model writes the whole quiz as one piece
-   of JSON, so a long one is likelier to be cut off mid-string, and the parse
-   is all or nothing: a truncated answer loses the entire quiz rather than the
-   last question. Short passages also run out of material for believable wrong
-   options, which is the failure that looks like a working quiz. */
+/* How many questions a passage can carry */
 const WORDS_PER_QUESTION = 25;
 const QUESTION_COUNTS = [5, 10, 15, 20];
 
@@ -735,8 +710,6 @@ async function openQuizSettings(reading) {
   const supported = questionsSupported(words);
 
   // A reading opened from inside a class already has its class. One opened
-  // from the Dashboard, or a built-in reading, belongs to no class, so the
-  // dialog has to ask which class the quiz is being assigned to.
   let classOptions = '';
   if (!currentClass) {
     const { data: classes } = await supa.from('classes')
@@ -795,15 +768,11 @@ async function openQuizSettings(reading) {
   document.getElementById('qzCancel').addEventListener('click', () => dlg.close('cancel'));
 
   // Listen on the form's submit rather than the Generate button's click.
-  // Cancel used to be the first submit button in the form, so pressing Enter
-  // in the title field submitted through it and quietly closed the dialog
-  // without ever generating anything.
   dlg.querySelector('form').addEventListener('submit', (e) => {
     e.preventDefault();
     const picker = document.getElementById('qzClass');
     if (picker) {
       // Everything downstream navigates back to currentClass, so set it here
-      // and the rest of the flow is identical to starting inside a class.
       const chosen = JSON.parse(dlg.dataset.classes || '[]')
         .find(c => c.id === picker.value);
       if (!chosen) { showToast('Pick a class first.', 'bug'); return; }
@@ -813,7 +782,6 @@ async function openQuizSettings(reading) {
       title: document.getElementById('qzTitle').value.trim() || reading.title,
       instructions: document.getElementById('qzNote').value.trim(),
       // A disabled option cannot be picked, so this is only a backstop against
-      // a stale page. The backend clamps too.
       n: Math.min(+document.getElementById('qzN').value || 5, supported),
       kinds: document.getElementById('qzKinds').value,
       language: document.getElementById('qzLang').value
@@ -823,37 +791,23 @@ async function openQuizSettings(reading) {
   });
 }
 
-/* "3 of 4" as a percentage, or a dash when nothing has been answered, so a
-   student who has not taken a quiz does not read as scoring zero. */
+/* "3 of 4" as a percentage, or a dash when nothing has been answered, so a student who has not taken */
 function scorePercent(correct, answered) {
   if (!answered) return '--';
   return Math.round((Number(correct) / Number(answered)) * 100) + '%';
 }
 
-/* The class average across every assigned quiz: total correct over total
-   answered, counting each question once per student. */
+/* The class average across every assigned quiz: total correct over total answered, counting each */
 function classQuizAverage(rows) {
   const answered = (rows || []).reduce((t, r) => t + Number(r.quiz_answered || 0), 0);
   const correct  = (rows || []).reduce((t, r) => t + Number(r.quiz_correct  || 0), 0);
   return scorePercent(correct, answered);
 }
 
-/* ====================================================================
-   BUILT-IN READINGS
+/* BUILT-IN READINGS Practice texts that belong to no teacher and no class */
 
-   Practice texts that belong to no teacher and no class. Every signed-in
-   account can read them; only an admin can add, edit or remove one, which
-   the policies in builtin_readings_migration.sql enforce in the database
-   rather than only in this page.
-   ==================================================================== */
-
-/* opts.canManage adds the Delete button, opts.canQuiz adds "Make a quiz".
-   They are separate because an admin manages the texts but has no class to
-   assign a quiz to, and a quiz always belongs to one class. */
-/* The "N quizzes from this text, X% average" tail on a reading card. Empty
-   when this account has made no quiz from that reading, so a teacher does not
-   see a 0% that is really "nobody has used it yet", and empty when the
-   migration behind it has not been run. */
+/* opts.canManage adds the Delete button, opts.canQuiz adds "Make a quiz" */
+/* The "N quizzes from this text, X% average" tail on a reading card */
 function builtInQuizMeta(qs) {
   if (!qs || !Number(qs.quizzes_made)) return '';
   const made = Number(qs.quizzes_made), answered = Number(qs.answered || 0);
@@ -882,9 +836,6 @@ async function loadBuiltInReadings(list, opts = {}) {
   }
 
   // Same per-reading quiz figure as the teacher's own readings, scoped in SQL
-  // to this reading and to the quizzes this account made. Several teachers can
-  // quiz the same built-in text, so without that second scope one teacher
-  // would be reading another's class results here.
   const stats = await Promise.all(readings.map(async (r) => {
     const { data } = await supa.rpc('teacher_reading_quiz_stats', { p_reading_id: r.id });
     return Array.isArray(data) ? data[0] : data;
@@ -919,7 +870,6 @@ async function loadBuiltInReadings(list, opts = {}) {
     const card = btn.closest('.reading-card');
     const reading = readings.find(r => r.id === card.dataset.reading);
     // A built-in reading belongs to no class, so the dialog has to ask which
-    // class the quiz is for.
     if (reading) openQuizSettings(reading);
   }));
 
@@ -929,10 +879,6 @@ async function loadBuiltInReadings(list, opts = {}) {
     const id = card.dataset.reading;
 
     // sessions.reading_id and quizzes.reading_id are both "on delete set
-    // null", so deleting the text does not delete the work done on it. The
-    // rows stay and lose the link to the text instead, which means a reading
-    // session that can no longer be traced to any passage. Say so, with the
-    // real numbers, because that is the part that cannot be undone.
     const [{ count: sessionCount }, { count: quizCount }] = await Promise.all([
       supa.from('sessions').select('id', { count: 'exact', head: true }).eq('reading_id', id),
       supa.from('quizzes').select('id', { count: 'exact', head: true }).eq('reading_id', id)
@@ -953,7 +899,6 @@ async function loadBuiltInReadings(list, opts = {}) {
       warning += '\nDelete anyway?';
     } else if (sessionCount === null) {
       // The count came back empty, which usually means this account cannot
-      // read sessions. Do not claim there are none.
       warning += '\n\nAny sessions already recorded on this text will be kept but '
                + 'will no longer say which text they were about.\n\nDelete anyway?';
     }
@@ -966,8 +911,7 @@ async function loadBuiltInReadings(list, opts = {}) {
   }));
 }
 
-/* The admin's add form. Teachers never see this: the button is not rendered
-   for them, and the database would refuse the insert even if it were. */
+/* The admin's add form */
 function wireBuiltInForm() {
   const form = document.getElementById('newBuiltInForm');
   if (!form) return;
@@ -1045,8 +989,7 @@ async function buildQuiz(reading, settings) {
   renderQuizReview(reading, settings, questions);
 }
 
-/* The review step. Everything here is editable, and nothing reaches a
-   student until Assign is pressed. */
+/* The review step */
 function renderQuizReview(reading, settings, questions) {
   const el = document.getElementById('classesPane');
   el.innerHTML = `
@@ -1155,7 +1098,6 @@ async function saveQuiz(reading, settings, questions) {
   const { error: qErr } = await supa.from('quiz_questions').insert(rows);
   if (qErr) {
     // Without the questions the quiz is an empty shell that students would
-    // still see, so take it back out rather than leave it assigned.
     await supa.from('quizzes').delete().eq('id', quiz.id);
     throw qErr;
   }
@@ -1283,9 +1225,7 @@ async function renderQuizResults(quiz) {
   });
 }
 
-/* What one student actually answered. Each question shows every choice, with
-   the correct one marked and the student's pick marked, so a teacher can see
-   which wrong answer attracted them rather than only that they were wrong. */
+/* What one student actually answered */
 async function renderStudentQuizAnswers(quiz, student) {
   const el = document.getElementById('classesPane');
   const back = `<button class="ghost" id="qzSBack" type="button">&larr; ${escapeHtml(quiz.title)}</button>`;
@@ -1336,10 +1276,6 @@ function escapeHtml(s) {
 async function renderAdmin() {
   const el = document.getElementById('adminPane');
   // Belt and suspenders: even if something let a non-admin reach this
-  // function, never run the fallback query below for them -- that
-  // fallback is a bare `profiles` select with no role filter, so it's
-  // only ever meant to run for a confirmed admin whose own admin_list_users()
-  // RPC call happened to fail (e.g. the migration not being run yet).
   if (!currentProfile || currentProfile.role !== 'admin') {
     el.innerHTML = '<h1>Admin</h1><p class="small" style="color:var(--bug)">You don\'t have access to this page.</p>';
     return;
@@ -1355,7 +1291,6 @@ async function renderAdmin() {
   let users = rpcUsers, hasEmails = true, emailError = '';
   if (uErr) {
     // falls back to a plain profiles query (no emails) if the migration
-    // hasn't been run yet, or the RPC call fails for some other reason
     console.warn('admin_list_users() failed, falling back to profiles only:', uErr);
     emailError = uErr.message || String(uErr);
     const fallback = await supa.from('profiles').select('id, full_name, role').order('full_name');
@@ -1438,8 +1373,6 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
       const id = sel.dataset.roleFor;
       const newRole = sel.value;
       // Granting admin is the one change here that can't be undone by the
-      // person it happens to -- a plain instant dropdown had no guardrail
-      // at all, so a stray click could hand anyone full access.
       if (newRole === 'admin' && !confirm(
         `Make "${nameById[id] || 'this account'}" an admin?\n\nAdmins can view every account and class across all teachers, and change ` +
         `anyone's role, including granting more admins. Only do this for someone you fully trust with that access.`
