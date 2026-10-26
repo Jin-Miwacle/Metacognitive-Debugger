@@ -498,6 +498,7 @@ function threadProblemLabel(t) {
 
 function renderDebug() {
   const el = $('#p-debug');
+  rememberDrafts(el);
   const p = state.pending;
   const goalWord = p ? goalOverlapWord(p.text) : null;
   const chooser = p ? `
@@ -521,11 +522,21 @@ function renderDebug() {
     <div class="card">
       <b>Debug a confusing spot</b>
       <p class="small" style="margin:4px 0 0">${state.selectionNote ? esc(state.selectionNote) : 'Select a word, phrase, or sentence in the text. It gets a red squiggle and we work it out together.'}</p>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <b>Or ask about the reading</b>
+      <p class="small" style="margin:4px 0 10px">For something that is not in one spot, like what is going on or why someone did something.</p>
+      <form id="askAnyForm">
+        <div class="row">
+          <input type="text" id="askAny" style="flex:1" placeholder="What do you want to ask?" autocomplete="off">
+          <button class="btn" type="submit">Ask</button>
+        </div>
+      </form>
     </div>`;
   const threads = state.threads.slice().reverse().map(t => `
     <div class="card ${t.status}" data-id="${t.id}">
       <span class="tag ${t.status}">${t.status === 'resolved' ? 'Clear now' : t.status === 'stuck' ? 'Still stuck' : esc(threadProblemLabel(t))}</span>
-      <blockquote class="quote">${esc(shorten(t.text, 140))}</blockquote>
+      ${t.text ? `<blockquote class="quote">${esc(shorten(t.text, 140))}</blockquote>` : ''}
       ${t.msgs.map(m => `<div class="msg ${m.from}${m.typing ? ' typing' : ''}">${esc(m.text)}${m.demo ? '<div class="small" style="margin-top:4px">Offline demo reply (backend not reached)</div>' : ''}</div>`).join('')}
       ${t.status !== 'resolved' && !t.busy ? `
         <form class="reply" data-id="${t.id}">
@@ -550,19 +561,78 @@ function renderDebug() {
 
   $$('.chips button', el).forEach(b => b.addEventListener('click', () => startDebug(b.dataset.problem)));
   const c = $('#cancelSel', el); if (c) c.addEventListener('click', () => { state.pending = null; getSelection().removeAllRanges(); renderDebug(); });
+  const af = $('#askAnyForm', el);
+  if (af) af.addEventListener('submit', e => {
+    e.preventDefault();
+    const box = $('#askAny', el);
+    const q = box.value.trim();
+    if (!q) return;
+    box.value = '';
+    drafts.ask = '';
+    askAboutReading(q);
+  });
+
+  restoreDrafts(el);
+}
+
+/* Half-typed text, kept across re-renders. The panel redraws whenever any
+   thread changes, and a reply arriving in one thread used to wipe whatever the
+   student was typing in another, or in the ask box. */
+const drafts = { ask: '', own: '', reply: {} };
+
+/* Blanks the live inputs as well as the held copies. Clearing only the held
+   copies does not work: the next render reads the old inputs first and puts
+   the text straight back. */
+function clearDrafts() {
+  drafts.ask = ''; drafts.own = ''; drafts.reply = {};
+  const el = $('#p-debug');
+  if (!el) return;
+  const ask = $('#askAny', el); if (ask) ask.value = '';
+  const own = $('#ownProblem', el); if (own) own.value = '';
+  $$('form.reply input', el).forEach(i => { i.value = ''; });
+}
+
+function rememberDrafts(el) {
+  if (!el) return;
+  const ask = $('#askAny', el); if (ask) drafts.ask = ask.value;
+  const own = $('#ownProblem', el); if (own) drafts.own = own.value;
+  $$('form.reply', el).forEach(f => {
+    const i = f.querySelector('input');
+    if (i) drafts.reply[f.dataset.id] = i.value;
+  });
+}
+
+function restoreDrafts(el) {
+  const ask = $('#askAny', el); if (ask && drafts.ask) ask.value = drafts.ask;
+  const own = $('#ownProblem', el); if (own && drafts.own) own.value = drafts.own;
+  $$('form.reply', el).forEach(f => {
+    const i = f.querySelector('input');
+    const v = drafts.reply[f.dataset.id];
+    if (i && v) i.value = v;
+  });
+  if (ask) ask.addEventListener('input', () => { drafts.ask = ask.value; });
+  if (own) own.addEventListener('input', () => { drafts.own = own.value; });
+  $$('form.reply', el).forEach(f => {
+    const i = f.querySelector('input');
+    if (i) i.addEventListener('input', () => { drafts.reply[f.dataset.id] = i.value; });
+  });
 }
 $('#p-debug').addEventListener('submit', e => {
   const own = e.target.closest('#ownProblemForm');
   if (own) {
     e.preventDefault();
-    const v = own.querySelector('input').value.trim();
+    const input = own.querySelector('input');
+    const v = input.value.trim();
     if (!v) return;
+    input.value = ''; drafts.own = '';
     startDebug('other', v);
     return;
   }
   const f = e.target.closest('form.reply'); if (!f) return;
   e.preventDefault();
-  const v = f.querySelector('input').value.trim(); if (!v) return;
+  const input = f.querySelector('input');
+  const v = input.value.trim(); if (!v) return;
+  input.value = ''; delete drafts.reply[f.dataset.id];
   sendFollowup(+f.dataset.id, v);
 });
 $('#p-debug').addEventListener('click', e => {
@@ -579,6 +649,30 @@ $('#p-debug').addEventListener('click', e => {
 });
 
 let threadSeq = 0;
+/* A question about the reading as a whole, with nothing highlighted. Sent as
+   problem "other" with the question as the problem text, which is what makes
+   the backend aim its reply at exactly what was asked. The whole reading goes
+   in as the context paragraph, so the coach is not left treating the question
+   as a bare vocabulary word with no story around it. */
+function askAboutReading(question) {
+  const q = (question || '').trim(); if (!q) return;
+  const id = ++threadSeq;
+  const whole = reader ? reader.innerText.trim() : '';
+  const t = {
+    id, problem: 'other', problemText: q,
+    text: '', paragraph: whole, status: 'open', busy: true,
+    attempts: 0, gaveUp: false, goalHint: goalOverlapWord(q),
+    msgs: [{ from: 'ai', text: 'Thinking…', typing: true }], mark: null,
+    fromSelection: false
+  };
+  state.threads.push(t);
+  logEvent('debug_start', { id, problem: 'other', problem_text: q, passage: '', from_selection: false });
+  dbInsertDebugEvent(t);
+  renderDebug();
+  askPartner(partnerPayload('debug', t))
+    .then(r => { t.busy = false; t.msgs = [{ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }]; renderDebug(); dbSaveTranscript(t); });
+}
+
 function startDebug(problem, problemText) {
   const p = state.pending; if (!p) return;
   const id = ++threadSeq;
@@ -738,7 +832,7 @@ async function fireCheckin() {
   const d = await callBackend('/checkin', {
     goal: state.goal && state.goal.text,
     text: reader.innerText.trim().slice(0, 6000),
-    struggles: state.threads.map(t => t.text).slice(-5),
+    struggles: state.threads.map(t => t.text || t.problemText || '').filter(Boolean).slice(-5),
     previous: c.shown.slice(-5),
     response_language: state.responseLanguage === 'auto' ? null : state.responseLanguage
   });
@@ -888,7 +982,7 @@ function renderStats() {
     <p class="lead">${state.goal ? 'Goal: ' + esc(state.goal.text) : 'No goal set yet.'}</p>
     <p class="small">Support level: <b>${SUPPORT_LABEL[state.support.level]}</b></p>
     <div class="stats">
-      <div class="stat"><b>${t.length}</b><span>Spots debugged</span></div>
+      <div class="stat"><b>${t.length}</b><span>Things worked on</span></div>
       <div class="stat"><b>${resolved}</b><span>Cleared up</span></div>
       <div class="stat"><b>${stuck}</b><span>Still stuck</span></div>
       <div class="stat"><b>${ci.length}</b><span>Check-ins answered</span></div>
@@ -938,6 +1032,7 @@ function resetSession() {
   });
   Object.assign(state.checkin, { on: false, pending: null, responses: [], i: 0, fetching: false, shown: [] });
   Object.assign(state.support, { score: 0, level: 'steady' });
+  clearDrafts();
   $('#goalLine').textContent = 'No goal set yet';
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
