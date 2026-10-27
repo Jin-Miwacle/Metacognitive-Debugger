@@ -1950,7 +1950,7 @@ function renderQuizWorkspace() {
         <option value="literal"${quizPrefs.kinds === 'literal' ? ' selected' : ''}>Answers stated in the text</option>
         <option value="inferential"${quizPrefs.kinds === 'inferential' ? ' selected' : ''}>Answers you have to work out</option>
       </select>
-      <p class="small" style="margin:6px 0 0">This text is ${words} words, so it can carry up to ${supported} question${supported === 1 ? '' : 's'}. Questions come out in the language of the reading; the answer choices follow your language setting.</p>
+      <p class="small" style="margin:6px 0 0">This text is ${words} words, so it can carry up to ${supported} question${supported === 1 ? '' : 's'}. The questions and answer choices come out in the language of the reading, and the explanations follow your language setting.</p>
 
       <div class="row" style="margin-top:14px"><button class="btn" id="makeQuiz" type="button">${quizCtx.status === 'error' ? 'Try again' : 'Make my quiz'}</button></div>`;
     wireQuizBack(el);
