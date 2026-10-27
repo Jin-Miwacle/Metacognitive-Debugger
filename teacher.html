@@ -657,7 +657,9 @@ let currentClass = null;   // set by openClassDetail, used by the quiz builder
 /* The address itself lives only in config.js, so there is one line to change */
 const QUIZ_CONFIG = Object.assign({ API_BASE: '' }, window.APP_CONFIG || {});
 
-const QUIZ_TIMEOUT_MS = 180000;
+/* A safety net, not a target. Three minutes aborted a 5-question quiz that was
+   still working: SEA-LION writes the options at roughly 30 seconds a question. */
+const QUIZ_TIMEOUT_MS = 420000;
 
 async function generateQuizQuestions({ text, n, kinds, language }) {
   if (!QUIZ_CONFIG.API_BASE) throw new Error('No backend address is set. Add API_BASE to config.js.');
@@ -703,14 +705,17 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
 
 /* How many questions a passage can carry */
 const WORDS_PER_QUESTION = 25;
-const QUESTION_COUNTS = [5, 10, 15, 20];
+/* Has to match QUIZ_MAX_QUESTIONS in the backend, which capped a quiz at 5
+   while this offered 20. Its own copy, because this page does not load app.js. */
+const QUESTION_COUNTS = [3, 5, 10];
 
 function countWords(text) {
   return (text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 function questionsSupported(words) {
-  return Math.max(5, Math.min(QUESTION_COUNTS[QUESTION_COUNTS.length - 1],
-                              Math.floor(Math.floor(words / WORDS_PER_QUESTION) / 5) * 5));
+  const room = Math.floor(words / WORDS_PER_QUESTION);
+  const fits = QUESTION_COUNTS.filter(n => n <= room);
+  return fits.length ? fits[fits.length - 1] : QUESTION_COUNTS[0];
 }
 
 async function openQuizSettings(reading) {

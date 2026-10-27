@@ -1,56 +1,27 @@
 
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from qg_format import qg_input, qa_input, detect_lang
 
-MODEL_NAME = "valhalla/t5-base-qg-hl"
-
-print(f"Loading T5 question-generation model: {MODEL_NAME}")
+MODEL_NAME = "MT5_Second_model"   # your OUTPUT_DIR or the HF repo id
+SRC_LEN = 768                     # same as train_mt5.py
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-model.eval()
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).eval()
 
-
-def generate_question(context: str, answer: str) -> str:
-    """Generate one question about a highlighted answer in the context."""
-
-    context = context.strip()
-    answer = answer.strip()
-
-    if not context or not answer:
-        raise ValueError("Both context and answer are required.")
-
-    highlighted = context.replace(
-        answer,
-        f"<hl> {answer} <hl>",
-        1
-    )
-
-    if highlighted == context:
-        raise ValueError("The answer was not found in the context.")
-
-    prompt = f"generate question: {highlighted}"
-
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512
-    )
-
+def _gen(prompt, max_new_tokens=64):
+    x = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=SRC_LEN)
     with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=64,
-            num_beams=4
-        )
+        out = model.generate(**x, max_new_tokens=max_new_tokens, num_beams=4)
+    return tokenizer.decode(out[0], skip_special_tokens=True).strip()
 
-    question = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    ).strip()
+def generate_question(context, answer, lang=None):
+    lang = lang or detect_lang(context)
+    return _gen(qg_input(answer, context, lang))
 
-    return question
+def answer_question(context, question, lang=None):
+    lang = lang or detect_lang(context)
+    return _gen(qa_input(question, context, lang))  
 
 
 if __name__ == "__main__":

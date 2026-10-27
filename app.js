@@ -1851,14 +1851,19 @@ async function openAssignedQuiz(quizId) {
 
 /* How many questions a passage can carry */
 const WORDS_PER_QUESTION = 25;
-const QUESTION_COUNTS = [5, 10, 15, 20];
+/* Has to match QUIZ_MAX_QUESTIONS in the backend. It capped a quiz at 5 while
+   this offered 20, so asking for 20 silently gave you 5. */
+const QUESTION_COUNTS = [3, 5, 10];
 
 function countWords(text) {
   return (text || '').trim().split(/\s+/).filter(Boolean).length;
 }
+/* The largest count this text is long enough for. Rounded to the counts actually
+   on offer, rather than to multiples of five, which stopped matching them. */
 function questionsSupported(words) {
-  return Math.max(5, Math.min(QUESTION_COUNTS[QUESTION_COUNTS.length - 1],
-                              Math.floor(Math.floor(words / WORDS_PER_QUESTION) / 5) * 5));
+  const room = Math.floor(words / WORDS_PER_QUESTION);
+  const fits = QUESTION_COUNTS.filter(n => n <= room);
+  return fits.length ? fits[fits.length - 1] : QUESTION_COUNTS[0];
 }
 
 /* What the student picked on the "Make my quiz" screen */
