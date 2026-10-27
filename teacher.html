@@ -305,7 +305,11 @@ async function loadClasses() {
   el.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const card = btn.closest('.reading-card');
-    if (!confirm('Delete this class? Students in it will lose access to your readings, and will need to join again if you recreate it.')) return;
+    const okDel = await askConfirm({
+      title: 'Delete this class?',
+      body: 'Students in it lose access to your readings, and have to join again with a new code if you recreate it.',
+      yes: 'Delete class', no: 'Keep it', danger: true });
+    if (!okDel) return;
     const { error } = await supa.from('classes').delete().eq('id', card.dataset.class);
     if (error) { showToast('Could not delete: ' + error.message, 'bug'); return; }
     showToast('Class deleted.', 'ok');
@@ -633,9 +637,13 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
   }));
   list.querySelectorAll('[data-act="delete"]').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('.reading-card');
-    if (!confirm('Delete this reading? Student sessions on it will be deleted too.')) return;
+    const okDel = await askConfirm({
+      title: 'Delete this reading?',
+      body: 'Student sessions on it are deleted with it.',
+      yes: 'Delete reading', no: 'Keep it', danger: true });
+    if (!okDel) return;
     const { error } = await supa.from('readings').delete().eq('id', card.dataset.reading);
-    if (error) { alert('Could not delete: ' + error.message); return; }
+    if (error) { showToast('Could not delete: ' + error.message, 'bug'); return; }
     loadReadingsInto(list, teacherId, classId, emptyMessage);
   }));
 }
@@ -885,7 +893,7 @@ async function loadBuiltInReadings(list, opts = {}) {
       supa.from('quizzes').select('id', { count: 'exact', head: true }).eq('reading_id', id)
     ]);
 
-    let warning = 'Delete this built-in reading? Every student loses access to it.';
+    let warning = 'Every student loses access to it.';
     if (sessionCount || quizCount) {
       warning += '\n\n';
       if (sessionCount) {
@@ -903,7 +911,11 @@ async function loadBuiltInReadings(list, opts = {}) {
       warning += '\n\nAny sessions already recorded on this text will be kept but '
                + 'will no longer say which text they were about.\n\nDelete anyway?';
     }
-    if (!confirm(warning)) return;
+    const okWarn = await askConfirm({
+      title: 'Delete this built-in reading?',
+      body: warning.replace(/\n*\s*Delete anyway\?\s*$/, ''),
+      yes: 'Delete anyway', no: 'Keep it', danger: true });
+    if (!okWarn) return;
 
     const { error: delErr } = await supa.from('readings').delete().eq('id', id);
     if (delErr) { showToast('Could not delete: ' + delErr.message, 'bug'); return; }
@@ -1141,7 +1153,11 @@ async function loadClassQuizzes(container, classId) {
 
   container.querySelectorAll('[data-act="unassign"]').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!confirm('Unassign this quiz? Students will no longer see it. Answers already given are kept.')) return;
+    const okUn = await askConfirm({
+      title: 'Unassign this quiz?',
+      body: 'Students stop seeing it. Answers they have already given are kept.',
+      yes: 'Unassign', no: 'Leave it assigned', danger: true });
+    if (!okUn) return;
     const row = btn.closest('[data-quiz]');
     const { error: delErr } = await supa.from('quizzes').delete().eq('id', row.dataset.quiz);
     if (delErr) { showToast('Could not unassign: ' + delErr.message, 'bug'); return; }
@@ -1270,6 +1286,39 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* In-app confirm, the same one the student app uses. Replaces window.confirm,
+   whose box carries the browser's own title and styling. A body with blank
+   lines in it becomes separate paragraphs. */
+function askConfirm({ title, body, yes, no, danger }) {
+  return new Promise(resolve => {
+    let dlg = document.getElementById('confirmDlg');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.id = 'confirmDlg';
+      document.body.appendChild(dlg);
+    }
+    const paras = String(body || '').split(/\n\s*\n/).filter(p => p.trim())
+      .map(p => `<p class="small" style="margin:0 0 10px">${escapeHtml(p.trim())}</p>`).join('');
+    dlg.innerHTML = `
+      <h3 style="margin:0 0 8px">${escapeHtml(title)}</h3>
+      ${paras}
+      <div class="row" style="margin-top:14px">
+        <button class="btn${danger ? ' danger' : ''}" type="button" id="cfYes">${escapeHtml(yes)}</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" type="button" id="cfNo">${escapeHtml(no || 'Cancel')}</button>
+      </div>`;
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; try { dlg.close(); } catch (e) {} resolve(v); };
+    dlg.querySelector('#cfYes').addEventListener('click', () => finish(true));
+    dlg.querySelector('#cfNo').addEventListener('click', () => finish(false));
+    dlg.addEventListener('close', () => finish(false), { once: true });
+    try { dlg.showModal(); } catch (e) { finish(false); return; }
+    // Anything that undoes work opens with the safe button focused
+    if (danger) dlg.querySelector('#cfNo').focus();
+  });
+}
+
 /* ADMIN: every account (with a role dropdown) and every class, across all
    teachers. Only reachable when the profile's role is 'admin' -- the nav
    button stays hidden otherwise, and it's the database's own rules, not
@@ -1374,10 +1423,12 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
       const id = sel.dataset.roleFor;
       const newRole = sel.value;
       // Granting admin is the one change here that can't be undone by the
-      if (newRole === 'admin' && !confirm(
-        `Make "${nameById[id] || 'this account'}" an admin?\n\nAdmins can view every account and class across all teachers, and change ` +
-        `anyone's role, including granting more admins. Only do this for someone you fully trust with that access.`
-      )) {
+      if (newRole === 'admin' && !(await askConfirm({
+        title: `Make ${nameById[id] || 'this account'} an admin?`,
+        body: "Admins can view every account and class across all teachers, and change anyone's role, "
+            + 'including granting more admins.\n\nOnly do this for someone you fully trust with that access.',
+        yes: 'Make them an admin', no: 'Cancel', danger: true
+      }))) {
         sel.value = prevValue;
         return;
       }
@@ -1391,7 +1442,11 @@ async function renderAdminBody(users, classes, el, hasEmails, emailError) {
 
   el.querySelectorAll('[data-act="delete-class"]').forEach(btn => btn.addEventListener('click', async () => {
     const card = btn.closest('[data-class]');
-    if (!confirm("Delete this class? Its students will lose access to that teacher's readings.")) return;
+    const okDel = await askConfirm({
+      title: 'Delete this class?',
+      body: "Its students lose access to that teacher's readings.",
+      yes: 'Delete class', no: 'Keep it', danger: true });
+    if (!okDel) return;
     const { error } = await supa.from('classes').delete().eq('id', card.dataset.class);
     if (error) { showToast('Could not delete: ' + error.message, 'bug'); return; }
     showToast('Class deleted.', 'ok');
