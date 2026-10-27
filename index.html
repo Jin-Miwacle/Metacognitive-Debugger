@@ -6,7 +6,7 @@
 <title>Reading Partner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Literata:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -20,7 +20,7 @@
 
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove()"></span>
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="var f=this.previousElementSibling; this.style.display='none'; if(f) f.style.display='flex'" onload="var f=this.previousElementSibling; if(f) f.style.display='none'"></span>
         Reading Partner
       </div>
       <nav class="sidebar-nav" aria-label="Main">
@@ -35,6 +35,10 @@
         <button class="side-link" type="button" data-view="classes">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8.3" r="3"/><path d="M3.6 19c.6-3 2.7-4.7 5.4-4.7s4.8 1.7 5.4 4.7"/><circle cx="17" cy="8.8" r="2.3"/><path d="M15.3 14.6c2.2.2 3.9 1.8 4.4 4.4"/></svg>
           <span>Classes</span>
+        </button>
+        <button class="side-link" type="button" data-view="history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.6"/><path d="M12 7.6V12l3 2"/></svg>
+          <span>History</span>
         </button>
         <button class="side-link" type="button" data-view="settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.3 19.8 7.8V16.2L12 20.7 4.2 16.2V7.8Z"/><path d="M9.3 10.3h5.4v3.4H9.3Z"/></svg>
@@ -110,6 +114,11 @@
         <div id="classesPane" class="view-pad"></div>
       </section>
 
+      <!-- HISTORY: past reading sessions and how they went -->
+      <section id="historyView" class="view" hidden>
+        <div id="historyPane" class="view-pad"></div>
+      </section>
+
       <!-- SETTINGS: account details, password, appearance -->
       <section id="settingsView" class="view" hidden>
         <div id="settingsPane" class="view-pad"></div>
@@ -123,23 +132,36 @@
   <form method="dialog">
     <h3 style="margin:0 0 4px">Use your own text</h3>
     <p class="small" style="margin:0 0 10px">Upload a file, or paste a passage directly.</p>
+    <label class="f" for="pasteTitle">What is this text called</label>
+    <input type="text" id="pasteTitle" placeholder="e.g. Science reviewer, chapter 4" maxlength="120">
+    <p class="small" style="margin:4px 0 0">This is the name you will see in History later. Uploading a file fills it in from the file name.</p>
     <label class="f" for="pasteFile">Upload a file (PDF, Word, PowerPoint, or .txt)</label>
     <input type="file" id="pasteFile" accept=".pdf,.docx,.pptx,.txt">
     <p class="small" id="pasteFileMsg" style="min-height:16px"></p>
     <label class="f" for="pasteText">Or paste text directly (separate paragraphs with a blank line)</label>
     <textarea id="pasteText" placeholder="Paste your reading here"></textarea>
     <div class="row" style="margin-top:12px; justify-content:flex-end">
-      <button class="btn alt" value="cancel">Cancel</button>
-      <button class="btn" id="pasteOk" value="ok">Load text</button>
+      <button class="btn alt" type="button" id="pasteCancel">Cancel</button>
+      <button class="btn" id="pasteOk" type="submit">Load text</button>
     </div>
   </form>
 </dialog>
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<!-- pdf.js 3.x, not 4.x. Version 4 ships ES modules only, so a plain
+     <script src> tag gets a 404 and window.pdfjsLib is never defined. That
+     is why PDF upload failed while Word and PowerPoint kept working.
+     3.11.174 is the last release with a UMD build a normal script tag can
+     load. If pdf.js is upgraded again, both pages have to load it with
+     type="module" and the workerSrc in fileExtract.js has to point at the
+     matching .mjs file. -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('pdf.js')"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('mammoth (Word)')"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"
+        onerror="(window.__libFail=window.__libFail||[]).push('JSZip (PowerPoint)')"></script>
 <script src="fileExtract.js"></script>
 <script src="auth.js"></script>
 <script src="settings.js"></script>
