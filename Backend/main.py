@@ -546,7 +546,10 @@ def on_the_selection(ask):
 # "Say it in your own words" reads as a test and confuses students; the adapter sometimes adds it anyway.
 _RESTATE_REQUEST = re.compile(
     r"[^.?!]*\b(own words|sariling (mga )?(salita|pananalita)|restate|say it back|explain it back"
-    r"|read (that|it|the sentence|this)[^.?!]* (out loud|aloud)|basahin mo[^.?!]* (nang |ng )?malakas"
+    r"|read (that|it|the sentence|this)[^.?!]* (out loud|aloud)"
+    # Filipino: basahin mo / pakibasa / bigkasin, with or without "mo", any
+    # wording in between, ending in malakas. "Pakibasa nang malakas" was slipping through.
+    r"|(basahin|pakibasa|bigkasin|bumasa)( mo)?[^.?!]*\b(nang |ng )?malakas"
     r"|repeat (that|it|after me)|ulitin mo)\b[^.?!]*[.?!]?\s*",
     re.I)
 
@@ -776,6 +779,50 @@ def find_evidence(evidence: str, passage: str) -> Optional[str]:
         return None
     return " ".join(passage[m.start():m.end()].split())
 
+# mT5 writes the question wording. When it cannot, this writes it instead, so a
+# student is not left with no quiz at all. Kept separate and labelled so the two
+# generators can still be told apart in an evaluation.
+def sealion_questions(passage: str, targets: list) -> list:
+    want = [{"kind": str(t.get("kind", "Literal")).strip() or "Literal",
+             "answer": str(t.get("answer", "")).strip()} for t in targets]
+    prompt = (
+        "Write ONE reading-comprehension question for each answer below. The question must be\n"
+        "answerable from the passage, and its answer must be exactly the given phrase.\n"
+        "Write each question in the same language as the passage. Do not invent facts.\n"
+        "Do not put the answer inside the question.\n\n"
+        f"PASSAGE:\n{passage}\n\n"
+        f"ANSWERS:\n{json.dumps(want, ensure_ascii=False, indent=2)}\n\n"
+        'Return valid JSON only: {"items": [{"kind": "...", "answer": "...", "q": "..."}]}'
+    )
+    try:
+        raw = ask_sealion("Write quiz questions. Return valid JSON only.", prompt,
+                          temperature=0.3, max_tokens=500, use_adapter=False)
+        clean = raw.strip()
+        if "```json" in clean:
+            clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+        items = json.loads(clean).get("items", [])
+    except Exception as e:
+        print("[Quiz] the fallback question writer failed:", repr(e))
+        return []
+
+    out = []
+    for it in items:
+        q = str(it.get("q", "")).strip()
+        a = str(it.get("answer", "")).strip()
+        if not q or not a:
+            continue
+        # The answer still has to be the passage's own words.
+        start = passage.lower().find(a.lower())
+        if start == -1:
+            continue
+        out.append({"kind": str(it.get("kind", "Literal")).strip() or "Literal",
+                    "q": q, "correct_text": passage[start:start + len(a)],
+                    "source": "sealion"})
+    return out
+
+
 def generate_quiz(ask: QuizAsk) -> list:
     n = max(2, min(ask.n, 5))
     passage = ask.text.strip()[:4000]
@@ -932,15 +979,41 @@ Passage:
             "correct_text": exact_answer
         })
 
+    # STEP 2b: mT5 is the question generator, but on this hardware it often
+    # returns nothing usable, and one empty list killed the whole quiz. When it
+    # comes up short, SEA-LION writes the wording for the targets mT5 could not
+    # handle, so the student still gets a quiz. Every question says which model
+    # wrote it, so an evaluation can count the two separately or drop the
+    # fallback ones. Set QG_FALLBACK=0 to turn this off and go back to failing.
+    for item in generated:
+        item["source"] = "mt5"
+
+    if len(generated) < n and QG_FALLBACK:
+        done = {g["correct_text"].lower() for g in generated}
+        left = [i for i in answer_items
+                if str(i.get("answer", "")).strip()
+                and str(i.get("answer", "")).strip().lower() not in done]
+        if left:
+            made = sealion_questions(passage, left[: n - len(generated)])
+            for q in made:
+                if q["q"].lower() in used_questions:
+                    continue
+                used_questions.add(q["q"].lower())
+                generated.append(q)
+            print(f"[Quiz] mT5 fell short, SEA-LION wrote {len(made)} question(s)")
+
     if not generated:
         raise RuntimeError(
+            "Neither mT5 nor the fallback could turn the selected answer phrases into questions."
+            if QG_FALLBACK else
             "T5 could not generate questions from the selected answer phrases."
         )
 
     print(f"[Quiz] Requested questions: {n}")
     print(f"[Quiz] Answer targets returned: {len(answer_items)}")
-    print(f"[Quiz] T5 questions generated: {len(generated)}")
-    print(f"[Quiz] T5 questions: {generated}")
+    print(f"[Quiz] by mT5: {sum(1 for g in generated if g.get('source') == 'mt5')}, "
+          f"by SEA-LION fallback: {sum(1 for g in generated if g.get('source') == 'sealion')}")
+    print(f"[Quiz] questions: {generated}")
 
     # STEP 3: Use SEA-LION to create the answer options and supporting details.
     # Keep the question wording generated by T5 unchanged.
@@ -1268,11 +1341,16 @@ Questions and correct answers:
             "options": options,
             "answer": final_answer_index,
             "why": why,
-            "evidence": evidence
+            "evidence": evidence,
+            # Which model wrote the question itself, so an evaluation can
+            # separate mT5's output from the fallback's.
+            "source": item.get("source", "mt5")
         })
 
     print(f"[Quiz] Questions returned by SEA-LION: {len(option_items)}")
-    print(f"[Quiz] Questions surviving validation: {len(cleaned)}")
+    print(f"[Quiz] Questions surviving validation: {len(cleaned)} "
+          f"(mT5 {sum(1 for c in cleaned if c['source'] == 'mt5')}, "
+          f"fallback {sum(1 for c in cleaned if c['source'] == 'sealion')})")
 
     if not cleaned:
         print("[Quiz] DEBUG: No questions survived final validation.")
@@ -1324,6 +1402,11 @@ def health():
 
 # After this many answers that did not show understanding, the coach explains outright.
 GIVEUP_AFTER = int(os.getenv("GIVEUP_AFTER", "3"))
+
+# When mT5 cannot word a question, let SEA-LION write it rather than fail the
+# whole quiz. Each question still records which model wrote it. QG_FALLBACK=0
+# restores the old behaviour, for a run that must be mT5 only.
+QG_FALLBACK = os.getenv("QG_FALLBACK", "1") != "0"
 
 # "What do you mean?" and "huh?" are questions, but they say the student didn't understand.
 _CONFUSED = re.compile(

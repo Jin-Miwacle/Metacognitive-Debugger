@@ -102,6 +102,8 @@ choose close consider describe despite during each either even every except expl
 focus following for from good great here however if imagine instead keep last later let look
 maybe meanwhile more most next no notice now once only open or other perhaps pick picture
 read remember right second see several since so some start still such suddenly take tell than
+everyone everybody people someone somebody anyone anybody nobody colour color size time reason point
+part thing things word words sentence sentences line lines story character characters author
 that then there these they think this those though through together too try unless until use
 very watch well what when where whether which while who why with without yes yet your
 ang anong ano alin bago bakit basahin bawat dahil dapat dito doon gayunpaman halimbawa hanapin
@@ -183,6 +185,13 @@ _LOWER_NAME = re.compile(
     r"|\b(?:tell|talk)\s+me\s+(?:about|more\s+about)\s+"
     r"|\b(?:explain|describe|about|regarding)\s+"
     r"|\b(?:what|who|where|when|why|how)\s+(?:did|does|is|was|are|were)\s+"
+    # "i dont get what michelle did": the name sits between the question word and
+    # the verb, so the verb has to be looked for ahead rather than matched before.
+    r"|\b(?:what|who|why|how|bakit|paano|anong?)\s+"
+    # No copulas here: "what colour was the lamp" is a question about a thing,
+    # not about someone named Colour. Only verbs that take a doer.
+    r"(?=[^\W\d_][\w'-]*\s+(?:did|does|said|says|meant|means|wanted|felt"
+    r"|thought|knew|saw|went|ginawa|sinabi)\b)"
     r"|\b(?:si|sina|kay|kina|ni|nina|nasaan|tungkol\s+kay)\s+)"
     r"([^\W\d_][\w'-]*)"
     r"(?:\s+([^\W\d_][\w'-]*))?", re.I)
