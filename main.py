@@ -113,7 +113,6 @@ def answer_matches(question, answer, passage, lang):
 # Measured on held-out FilQuAD: Filipino answers of 4-8 words passed the round-trip check
 # about 49% of the time, 1-3 words about 66%. English showed no such drop.
 QG_CANDIDATES = max(1, int(os.getenv("QG_CANDIDATES", "3")))
-QG_SAMPLE = os.getenv("QG_SAMPLE", "1") != "0"
 MAX_ANSWER_WORDS = {
     "fil": int(os.getenv("QG_MAX_WORDS_FIL", "3")),
     "en": int(os.getenv("QG_MAX_WORDS_EN", "8")),   # 8 = longest answer mT5 was trained on
@@ -136,39 +135,7 @@ def make_questions(answer, passage, lang, k=QG_CANDIDATES):
             seen.add(q.lower())
             result.append(q)
 
-    n_beam = len(result)
-
-    # Beam search often returns near-identical questions. When it gives fewer than k different
-    # ones, first try diverse beam search (beam groups that are penalised for repeating each other),
-    # then hot sampling. QG_SAMPLE=0 turns both off.
-    def _add(seqs):
-        for seq in seqs:
-            if len(result) >= k:
-                break
-            q = qg_tokenizer.decode(seq, skip_special_tokens=True).strip()
-            if q and q.lower() not in seen:
-                seen.add(q.lower())
-                result.append(q)
-
-    n_diverse = 0
-    if QG_SAMPLE and len(result) < k:
-        try:
-            with torch.inference_mode():
-                diverse = qg_model.generate(**inputs, max_new_tokens=48, num_beams=6, num_beam_groups=3,
-                                            diversity_penalty=1.5, num_return_sequences=6,
-                                            no_repeat_ngram_size=3, do_sample=False, use_cache=True)
-            _add(diverse)
-        except Exception as e:
-            print(f"[Quiz] Diverse beam search unavailable ({type(e).__name__}: {str(e)[:80]}); using sampling only")
-        n_diverse = len(result) - n_beam
-    if QG_SAMPLE and len(result) < k:
-        with torch.inference_mode():
-            sampled = qg_model.generate(**inputs, max_new_tokens=48, do_sample=True, top_k=50, top_p=0.95,
-                                        temperature=1.3, num_return_sequences=k + 4,
-                                        no_repeat_ngram_size=3, use_cache=True)
-        _add(sampled)
-    print(f"[Quiz] Candidates for '{answer}': {n_beam} from beam search, {n_diverse} from diverse beams, "
-          f"{len(result) - n_beam - n_diverse} sampled")
+    print(f"[Quiz] Candidates for '{answer}': {len(result)} -> {result}")
     return result
 
 def _cmp(text):
@@ -236,12 +203,32 @@ def copies_passage(question, passage, run=None):
     q, p = _cmp(question).split(), f" {_cmp(passage)} "
     return any(" " + " ".join(q[i:i + run]) + " " in p for i in range(len(q) - run + 1))
 
+_NUMBER_WORD = re.compile(
+    r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|(?:thir|four|fif|six|seven|eigh|nine)teen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|hundreds|thousand|thousands|million|dozen|"
+    r"couple|half|several|few|many|both|all|isa|dalawa|tatlo|apat|lima|anim|pito|walo|siyam|sampu|daan|libo|"
+    r"milyon|marami|ilan|ilang|kalahati|isang|dalawang|tatlong|limang|pitong|walong|sampung|piso|pisong|pesos?)\b", re.I)
+_COUNT_QUESTION = re.compile(r"\bhow (?:many|much)\b|\b(?:magkano|ilan|ilang)\b", re.I)
+_WH_WORD = re.compile(
+    r"\b(?:what|who|whom|whose|which|where|when|why|how|"
+    r"ano|anu|anong|ano['’]ng|sino|sinong|saan|saang|nasaan|kailan|ilan|ilang|bakit|paano|alin|aling|"
+    r"magkano|gaano|kanino|kaninong)\b", re.I)
+
+_AUX_START = re.compile(r"^\W*(?:is|are|was|were|do|does|did|can|could|will|would|has|have|had)\b", re.I)
+
+def question_looks_like_question(question):
+    """A real question needs a question word or an auxiliary verb ('The terraces are carved into?' has neither)."""
+    return bool(_WH_WORD.search(question) or _AUX_START.search(question))
+
 def question_fits_answer(question, answer):
     """A number or amount answer needs a question that asks for a number or amount
     ('What is the peak called?' cannot have '2,463 metres' as its answer).
     Only short answers containing a digit are treated as quantities, so
     'ninety-one steps' or 'three long flashes and one short' are not forced into a 'how many' question."""
     a = answer.strip()
+    # 'How many ...?' needs an answer that is a number or amount ('How many fields ...?' -> 'water from the rainforests' is wrong).
+    if _COUNT_QUESTION.search(question) and not (re.search(r"\d", a) or _NUMBER_WORD.search(a)):
+        return False
     if len(a.split()) > 3 or not _ANSWER_IS_QUANTITY.search(a):
         return True
     return bool(_QUANTITY_QUESTION.search(question))
@@ -260,6 +247,37 @@ def distractor_in_answer_sentence(distractors, passage, span):
         c = _cmp(d)
         if c and any(_contains(c, _cmp(x)) for x in sents):
             return d
+    return None
+
+_FUNCTION_WORDS = {"the", "a", "an", "of", "to", "in", "on", "at", "by", "for", "with", "from", "and",
+                   "or", "but", "that", "which", "who", "as", "is", "was", "were", "are", "be", "been",
+                   "ang", "ng", "sa", "na", "at", "ay", "mga", "si", "ni", "kay", "para", "o", "pero"}
+_BAD_START_WORDS = {"of", "to", "in", "on", "by", "for", "with", "from", "and", "or", "but", "that",
+                    "which", "who", "as", "is", "was", "were", "are", "na", "ay", "ng", "pero"}
+_OF_PHRASE = re.compile(r"\s+of\s+(?:(?:the|a|an|his|her|their|its|my|our|your)\s+)?[\w'’-]+", re.I)
+
+def _first_usable_question(answer, passage, lang, used_questions):
+    """First mT5 question for this answer phrase that passes every check, or None."""
+    for candidate in make_questions(answer, passage, lang):
+        if candidate.lower() in used_questions:
+            print(f"[Quiz] Skipped (same question as an earlier one): {candidate}")
+            continue
+        if not question_looks_like_question(candidate):
+            print(f"[Quiz] Dropped (no question word): {candidate}")
+            continue
+        if lang == "en" and question_is_garbled(candidate):
+            print(f"[Quiz] Dropped (ungrammatical question): {candidate}")
+            continue
+        if copies_passage(candidate, passage):
+            print(f"[Quiz] Dropped (question copies {QG_MAX_COPY}+ words in a row from the passage): {candidate}")
+            continue
+        if not question_fits_answer(candidate, answer):
+            print(f"[Quiz] Dropped (question type does not fit a number/amount answer): "
+                  f"{candidate} -> {answer}")
+            continue
+        if answer_matches(candidate, answer, passage, lang):
+            return candidate
+        print(f"[Quiz] Dropped (mT5 answer mismatch): {candidate}")
     return None
 
 def support_for(item, idx, option_items, total):
@@ -952,6 +970,9 @@ TARGET SELECTION:
 - Each answer target must be a short phrase of at most {max_words} words (a name,
   date, number, place, term or short noun phrase), never a full sentence.
 - Copy each answer target exactly from the passage.
+- The target must be a complete answer on its own. If the phrase only makes sense with a
+  following "of ..." part, include it (for example "ninety-one steps of the lighthouse", not "steps").
+  Prefer names, places, dates, numbers and who/what nouns over adjectives and verbs.
 - Each target must be ONE continuous phrase: a single noun phrase, name, place, number or date.
   Never a list of several items, never words joined with commas or semicolons, and never a bare
   adjective or description (for example not "dark, gloomy").
@@ -1033,26 +1054,30 @@ Passage:
             print(f"[Quiz] Skipped (answer longer than {max_words} words): {exact_answer}")
             continue
 
-        # Try the best few questions for this answer; keep the first one mT5 can answer back.
+        words = [w.casefold() for w in re.findall(r"[\w'’-]+", exact_answer)]
+        if words and (words[-1] in _FUNCTION_WORDS or words[0] in _BAD_START_WORDS):
+            print(f"[Quiz] Skipped (target starts or ends with a function word): {exact_answer}")
+            continue
+
+        # A target cut off before an "of ..." phrase makes mT5 drop the verb ("What was the
+        # lighthouse to light the lamp?" for "ninety-one steps"). English: try the longer phrase first.
+        variants = [exact_answer]
+        if lang == "en":
+            m = _OF_PHRASE.match(passage[start + len(exact_answer):])
+            if m:
+                longer = passage[start:start + len(exact_answer) + m.end()]
+                if len(longer.split()) <= max_words and longer.lower() not in used_answers:
+                    variants.insert(0, longer)
+
+        # Try the best few questions for each variant; keep the first one mT5 can answer back.
         question = None
-        for candidate in make_questions(exact_answer, passage, lang):
-            if candidate.lower() in used_questions:
-                print(f"[Quiz] Skipped (same question as an earlier one): {candidate}")
-                continue
-            if lang == "en" and question_is_garbled(candidate):
-                print(f"[Quiz] Dropped (ungrammatical question): {candidate}")
-                continue
-            if copies_passage(candidate, passage):
-                print(f"[Quiz] Dropped (question copies {QG_MAX_COPY}+ words in a row from the passage): {candidate}")
-                continue
-            if not question_fits_answer(candidate, exact_answer):
-                print(f"[Quiz] Dropped (answer is a number or amount but the question does not ask for one): "
-                      f"{candidate} -> {exact_answer}")
-                continue
-            if answer_matches(candidate, exact_answer, passage, lang):
-                question = candidate
+        for variant in variants:
+            question = _first_usable_question(variant, passage, lang, used_questions)
+            if question:
+                if variant != exact_answer:
+                    print(f"[Quiz] Using the longer target: {variant}")
+                exact_answer = variant
                 break
-            print(f"[Quiz] Dropped (mT5 answer mismatch): {candidate}")
         if not question:
             print(f"[Quiz] No usable question for target: {exact_answer}")
             continue
@@ -1169,10 +1194,6 @@ QUESTION CHECK:
   language of the passage. Otherwise set it to true.
 - Never reinterpret or reword the supplied question inside "q" or "why". Report the problem with
   "question_ok": false instead; "q" itself must always stay unchanged.
-- When "question_ok" is false, write "better_question": one short, natural question in the language of
-  the passage whose only correct answer is exactly the supplied correct answer. Use your own wording
-  (do not copy more than 6 words in a row from the passage). When "question_ok" is true,
-  set "better_question" to an empty string.
 
 WHY:
 - Write the explanation in {why_language}, the language of the passage.
@@ -1211,7 +1232,6 @@ Required format:
       "kind": "Literal",
       "q": "Question text unchanged",
       "question_ok": true,
-      "better_question": "",
       "correct_option": "Concise correct answer",
       "distractors": [
         "Incorrect option A",
@@ -1304,18 +1324,8 @@ Required format:
         flag = support.get("question_ok")
         print(f"[Quiz] SEA-LION question_ok={flag!r} for: {item['q']}")
         if str(flag).strip().lower() in ("false", "no", "0"):
-            better = str(support.get("better_question", "")).strip()
-            ok = bool(better) and _cmp(better) != _cmp(item["q"])
-            ok = ok and not copies_passage(better, passage)
-            ok = ok and not (lang == "en" and question_is_garbled(better))
-            ok = ok and question_fits_answer(better, correct_text)
-            ok = ok and answer_matches(better, correct_text, passage, lang)
-            if not ok:
-                print(f"[Quiz] Rejected (SEA-LION says the question does not fit its answer, "
-                      f"and its rewrite {better!r} failed the checks): {item['q']}")
-                continue
-            print(f"[Quiz] Rewrote question: {item['q']} -> {better}")
-            item = dict(item, q=better)
+            print(f"[Quiz] Rejected (SEA-LION says the question does not fit its answer): {item['q']}")
+            continue
 
         correct_option = str(support.get("correct_option", "")).strip()
         distractors = support.get("distractors", [])
@@ -1351,6 +1361,13 @@ Required format:
             print(f"[Quiz] Rejected: distractor '{clash}' is in the same passage sentence as the answer "
                   f"'{correct_text}', so it may also be correct: {item['q']}")
             continue
+
+        # If only some options start with a capital letter, the odd one out gives the answer away
+        # ("rainforests above" among capitalised distractors). Capitalise them all in that case.
+        _firsts = [o[:1] for o in [correct_option] + distractors if o[:1].isalpha()]
+        if any(c.isupper() for c in _firsts) and any(c.islower() for c in _firsts):
+            correct_option = correct_option[:1].upper() + correct_option[1:]
+            distractors = [d[:1].upper() + d[1:] for d in distractors]
 
         all_options = [correct_option] + distractors
         normalized_options = [
@@ -1431,6 +1448,13 @@ Required format:
             print(f"[Quiz] Evidence: {evidence}")
             continue
         evidence = found   # the passage's own wording, not the model's copy of it
+        if not _contains(_cmp(correct_text), _cmp(evidence)):
+            sents = sentences_with(passage, correct_text)
+            if not sents:
+                print(f"[Quiz] Rejected: evidence does not contain the answer '{correct_text}': {item['q']}")
+                continue
+            print(f"[Quiz] Replaced evidence (it did not contain '{correct_text}') with the passage sentence that does")
+            evidence = sents[0]
 
         if not why or normalize_text(why) == normalize_text(evidence):
             print(
