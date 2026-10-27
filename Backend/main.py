@@ -14,6 +14,8 @@ Usage:
 """
 import json
 import os
+import random
+import time
 from typing import List, Optional
 import re
 
@@ -58,24 +60,132 @@ model = AutoModelForCausalLM.from_pretrained(
     low_cpu_mem_usage=True,
 )
 
-model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+if ADAPTER_PATH.strip().lower() == "none":
+    print("[adapter] SEALION_ADAPTER=none: running the base SEA-LION model only. "
+          "Quizzes work, but the reading coach will not use the Socratic adapter.")
+elif (
+    # a local folder that is missing or has no adapter_config.json (a "user/repo" id is left to the Hub)
+    (os.path.isdir(ADAPTER_PATH) and not os.path.isfile(os.path.join(ADAPTER_PATH, "adapter_config.json")))
+    or (not os.path.exists(ADAPTER_PATH) and not re.fullmatch(r"[\w.\-]+/[\w.\-]+", ADAPTER_PATH))
+):
+    raise SystemExit(
+        f"No adapter found at {ADAPTER_PATH}\n"
+        "Copy your trained adapter folder there, point SEALION_ADAPTER at it, "
+        "or set SEALION_ADAPTER=none to run without the adapter."
+    )
+else:
+    model = PeftModel.from_pretrained(model, ADAPTER_PATH)
 model.eval()
 
 model.generation_config.max_length = None
 print("SEALION Model loaded successfully!")
 
 # Load T5 Model
-T5_MODEL_NAME = "Aiken1016/MT5_Final_Model"
+from qg_format import qg_input, qa_input, detect_lang
+from qselect import rank_questions
+from quizrules import check_item, label_for
 
-print(f"Loading T5 question-generation model: {T5_MODEL_NAME}...")
+T5_MODEL_NAME = os.getenv("QG_MODEL", "Aiken1016/MT5_Second_model")  # fix the username if different
+QG_CHECK_ANSWER = os.getenv("QG_CHECK_ANSWER", "1") != "0"
 
-qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
-qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME, tie_word_embeddings=False)
+# The most questions one quiz may hold. The app offers 3, 5 and 10, and this has
+# to agree with it: a quiz was silently capped at 5 while the app offered 20, so
+# asking for 10 gave you 5 with no error anywhere.
+QUIZ_MAX_QUESTIONS = int(os.getenv("QUIZ_MAX_QUESTIONS", "10"))
+# SEA-LION writes the options for this many questions per call. One call for the
+# whole quiz ran out of tokens as the count grew, and a single bad brace lost
+# every question instead of one chunk.
+QUIZ_OPTION_CHUNK = int(os.getenv("QUIZ_OPTION_CHUNK", "3"))
+# When mT5 cannot word a question, let SEA-LION write it rather than fail the
+# whole quiz. Each question still records which model wrote it. QG_FALLBACK=0
+# restores the old behaviour, for a run that must be mT5 only.
+QG_FALLBACK = os.getenv("QG_FALLBACK", "1") != "0"
+
+print(f"Loading mT5 question-generation model: {T5_MODEL_NAME}...")
+qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
 qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
-qg_model.to(qg_device)
-qg_model.eval()
+qg_model.to(qg_device).eval()
 
-print("T5 question-generation model loaded successfully!")
+def _qg_generate(prompt: str, **gen_kwargs) -> str:
+    inputs = qg_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=768)
+    inputs = {k: v.to(qg_device) for k, v in inputs.items()}
+    with torch.inference_mode():
+        out = qg_model.generate(**inputs, max_new_tokens=48, num_beams=4, use_cache=True, **gen_kwargs)
+    return qg_tokenizer.decode(out[0], skip_special_tokens=True).strip()
+
+def make_question(answer, passage, lang):
+    return _qg_generate(qg_input(answer, passage, lang), no_repeat_ngram_size=3, early_stopping=True)
+
+def answer_matches(question, answer, passage, lang):
+    if not QG_CHECK_ANSWER:
+        return True
+    predicted = _qg_generate(qa_input(question, passage, lang))
+    n = lambda s: re.sub(r"\W+", " ", s.lower()).strip()
+    return bool(n(predicted)) and (n(answer) in n(predicted) or n(predicted) in n(answer))
+
+# How many questions to try per answer phrase, and how long an answer phrase may be.
+# Measured on held-out FilQuAD: Filipino answers of 4-8 words passed the round-trip check
+# about 49% of the time, 1-3 words about 66%. English showed no such drop.
+QG_CANDIDATES = max(1, int(os.getenv("QG_CANDIDATES", "3")))
+QG_SAMPLE = os.getenv("QG_SAMPLE", "1") != "0"
+MAX_ANSWER_WORDS = {
+    "fil": int(os.getenv("QG_MAX_WORDS_FIL", "3")),
+    "en": int(os.getenv("QG_MAX_WORDS_EN", "8")),   # 8 = longest answer mT5 was trained on
+}
+
+def make_questions(answer, passage, lang, k=QG_CANDIDATES):
+    """Top-k beam candidates for one answer phrase, best first, without duplicates.
+    The first one is the same question make_question() returns."""
+    inputs = qg_tokenizer(qg_input(answer, passage, lang), return_tensors="pt",
+                          truncation=True, max_length=768)
+    inputs = {key: v.to(qg_device) for key, v in inputs.items()}
+    with torch.inference_mode():
+        out = qg_model.generate(**inputs, max_new_tokens=48, num_beams=max(4, k),
+                                num_return_sequences=k, no_repeat_ngram_size=3,
+                                early_stopping=True, use_cache=True)
+    seen, result = set(), []
+    for seq in out:
+        q = qg_tokenizer.decode(seq, skip_special_tokens=True).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            result.append(q)
+
+    n_beam = len(result)
+
+    # Beam search often returns near-identical questions. When it gives fewer than k different
+    # ones, first try diverse beam search (beam groups that are penalised for repeating each other),
+    # then hot sampling. QG_SAMPLE=0 turns both off.
+    def _add(seqs):
+        for seq in seqs:
+            if len(result) >= k:
+                break
+            q = qg_tokenizer.decode(seq, skip_special_tokens=True).strip()
+            if q and q.lower() not in seen:
+                seen.add(q.lower())
+                result.append(q)
+
+    n_diverse = 0
+    if QG_SAMPLE and len(result) < k:
+        try:
+            with torch.inference_mode():
+                diverse = qg_model.generate(**inputs, max_new_tokens=48, num_beams=6, num_beam_groups=3,
+                                            diversity_penalty=1.5, num_return_sequences=6,
+                                            no_repeat_ngram_size=3, do_sample=False, use_cache=True)
+            _add(diverse)
+        except Exception as e:
+            print(f"[Quiz] Diverse beam search unavailable ({type(e).__name__}: {str(e)[:80]}); using sampling only")
+        n_diverse = len(result) - n_beam
+    if QG_SAMPLE and len(result) < k:
+        with torch.inference_mode():
+            sampled = qg_model.generate(**inputs, max_new_tokens=48, do_sample=True, top_k=50, top_p=0.95,
+                                        temperature=1.3, num_return_sequences=k + 4,
+                                        no_repeat_ngram_size=3, use_cache=True)
+        _add(sampled)
+    print(f"[Quiz] Candidates for '{answer}': {n_beam} from beam search, {n_diverse} from diverse beams, "
+          f"{len(result) - n_beam - n_diverse} sampled")
+    return result
+
 
 app = FastAPI(title="Reading Partner backend")
 
@@ -823,218 +933,250 @@ def sealion_questions(passage: str, targets: list) -> list:
     return out
 
 
-def generate_quiz(ask: QuizAsk) -> list:
-    n = max(2, min(ask.n, 5))
-    passage = ask.text.strip()[:4000]
+def _cmp(text):
+    return re.sub(r"\W+", " ", str(text).casefold()).strip()
 
-    if not passage:
-        raise ValueError("The passage cannot be empty.")
+def _contains(a, b):
+    """Whole-word containment: '1' is not inside '1524'."""
+    return f" {a} " in f" {b} "
 
-    def parse_json_response(raw: str) -> dict:
-        clean = raw.strip()
+def option_matches_span(option, span):
+    """True if SEA-LION's wording of the correct answer still says what the verified phrase says."""
+    o, s_ = _cmp(option), _cmp(span)
+    if not o or not s_:
+        return False
+    if _contains(s_, o) or _contains(o, s_):
+        return True
+    span_words = set(s_.split())
+    return len(span_words & set(o.split())) / len(span_words) >= 0.5
 
-        if "```json" in clean:
-            clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in clean:
-            clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+def clean_distractors(distractors, correct_option, span):
+    """Drop duplicates and any distractor that equals, contains or sits inside the correct
+    answer (or the verified phrase), since those can be correct too."""
+    refs = [r for r in (_cmp(correct_option), _cmp(span)) if r]
+    keep, seen = [], set()
+    for d in distractors:
+        c = _cmp(d)
+        if not c or c in seen:
+            continue
+        if any(_contains(c, r) or _contains(r, c) for r in refs):
+            continue
+        seen.add(c)
+        keep.append(str(d).strip())
+    return keep
 
-        return json.loads(clean)
+# ---- extra question checks -------------------------------------------------------------
+_ANSWER_IS_QUANTITY = re.compile(r"\d")   # digits only: "ninety-one steps" is an ordinary noun phrase
+_QUANTITY_QUESTION = re.compile(
+    r"\bhow (?:many|much|long|far|tall|high|old|big|large|deep|heavy|often|wide)\b"
+    r"|\bwhen\b|\bwhat (?:year|time|age|number|date)\b"
+    r"|\b(?:gaano|ilan|ilang|kailan|magkano|taon|taas|haba|bigat|laki|lalim|bilang|edad|oras|petsa)\b",
+    re.I)
 
-    # STEP 1: Use SEA-LION to identify answer phrases in the passage.
-    # T5 requires an answer phrase to be highlighted in the context.
-    answer_prompt = f"""
-Read the passage and select exactly {n} DISTINCT answer targets for a
-reading-comprehension quiz.
+# SAME_SENTENCE_CHECK=0 turns off the "distractor in the answer's sentence" rejection
+# if it throws away too many questions on long-sentenced passages.
+SAME_SENTENCE_CHECK = os.getenv("SAME_SENTENCE_CHECK", "1") != "0"
 
-QUESTION MIX:
-- If n = 2, select 1 literal target and 1 inferential target.
-- If n >= 3, select approximately half literal and half inferential targets.
-- Include at least one inferential target whenever the passage supports it.
+_NOT_PAST = {"exceed", "proceed", "succeed", "indeed", "hundred", "bleed", "breed", "speed", "agreed"}
+_GARBLED_DO = re.compile(
+    r"\b(?i:did|does|do)\s+(?:(?i:she|he|they|it|i|you|we)|[A-Z][a-z]+)\s+"
+    r"((?i:\w{3,}ed|went|came|took|made|saw|ran|got|gave|began|wrote|found|told|knew|kept|left|felt|"
+    r"brought|taught|was|were))\b")
 
-LITERAL:
-- The answer is directly stated in the passage.
-- The student can find the answer without drawing a conclusion.
+def question_is_garbled(question):
+    """English only: mT5 sometimes writes 'What did she turned ...?' (did/does/do + a past-tense verb).
+    A pattern check, not a grammar checker: it only catches this one mistake."""
+    m = _GARBLED_DO.search(question)
+    return bool(m) and m.group(1).lower() not in _NOT_PAST
 
-INFERENTIAL:
-- The answer requires connecting clues or drawing a reasonable conclusion.
-- Choose targets that support questions about causes, motivations,
-  implications, or lessons.
-- Do not label a directly stated fact as inferential merely to meet the mix.
+QG_MAX_COPY = int(os.getenv("QG_MAX_COPY", "8"))
 
-TARGET SELECTION:
-- Copy each answer target exactly from the passage.
-- For literal targets, select a meaningful fact or detail.
-- For inferential targets, select a passage detail that provides evidence
-  for a conclusion or interpretation.
-- Select different parts of the passage.
-- Do not repeat answer targets.
-- Do not invent facts.
+def copies_passage(question, passage, run=None):
+    """True if the question repeats `run` or more words in a row straight from the passage
+    (mT5 sometimes glues two clauses of the passage into one 'question')."""
+    run = run or QG_MAX_COPY
+    q, p = _cmp(question).split(), f" {_cmp(passage)} "
+    return any(" " + " ".join(q[i:i + run]) + " " in p for i in range(len(q) - run + 1))
 
-Return valid JSON only, using this format:
-{{
-  "items": [
-    {{
-      "kind": "Literal",
-      "answer": "exact phrase copied from the passage"
-    }},
-    {{
-      "kind": "Inferential",
-      "answer": "exact phrase copied from the passage"
-    }}
-  ]
-}}
+_FUNCTION_WORDS = {"the", "a", "an", "of", "to", "in", "on", "at", "by", "for", "with", "from", "and",
+                   "or", "but", "that", "which", "who", "as", "is", "was", "were", "are", "be", "been",
+                   "ang", "ng", "sa", "na", "at", "ay", "mga", "si", "ni", "kay", "para", "o", "pero"}
+_BAD_START_WORDS = {"of", "to", "in", "on", "by", "for", "with", "from", "and", "or", "but", "that",
+                    "which", "who", "as", "is", "was", "were", "are", "na", "ay", "ng", "pero"}
+_OF_PHRASE = re.compile(r"\s+of\s+(?:(?:the|a|an|his|her|their|its|my|our|your)\s+)?[\w'’-]+", re.I)
 
-Return exactly {n} items if the passage supports that many distinct targets.
+_NUMBER_WORD = re.compile(
+    r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|(?:thir|four|fif|six|seven|eigh|nine)teen|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|hundreds|thousand|thousands|million|dozen|"
+    r"couple|half|several|few|many|both|all|isa|dalawa|tatlo|apat|lima|anim|pito|walo|siyam|sampu|daan|libo|"
+    r"milyon|marami|ilan|ilang|kalahati|isang|dalawang|tatlong|limang|pitong|walong|sampung|piso|pisong|pesos?)\b", re.I)
+_COUNT_QUESTION = re.compile(r"\bhow (?:many|much)\b|\b(?:magkano|ilan|ilang)\b", re.I)
+_WH_WORD = re.compile(
+    r"\b(?:what|who|whom|whose|which|where|when|why|how|"
+    r"ano|anu|anong|ano['’]ng|sino|sinong|saan|saang|nasaan|kailan|ilan|ilang|bakit|paano|alin|aling|"
+    r"magkano|gaano|kanino|kaninong)\b", re.I)
+_AUX_START = re.compile(r"^\W*(?:is|are|was|were|do|does|did|can|could|will|would|has|have|had)\b", re.I)
 
-Passage:
-{passage}
-"""
+def question_looks_like_question(question):
+    """A real question needs a question word or an auxiliary verb ('The terraces are carved into?' has neither)."""
+    return bool(_WH_WORD.search(question) or _AUX_START.search(question))
 
-    raw_answers = ask_sealion(
-        "Select answer phrases from the supplied passage. Return valid JSON only.",
-        answer_prompt,
-        temperature=0.2,
-        max_tokens=500,
-        use_adapter=False,  # the Socratic adapter is trained to avoid stating answers
-    )
+def looks_like_list(answer):
+    """True for list-like or joined targets ('madilim, gubat', 'tinik; bulo', 'Luzon, Samar, Leyte and Mindanao').
+    Dates ('June 19, 1861') and one 'City, Province' style pair of capitalised names are fine."""
+    a = answer.strip()
+    if re.search(r"[;:]\s|\s[-–—]\s", a):
+        return True
+    parts = re.split(r",\s+", a)
+    if len(parts) == 1:
+        return False
+    if len(parts) == 2:
+        if re.fullmatch(r"\d{4}", parts[1].strip()):
+            return False
+        if all(p[:1].isupper() and len(p.split()) <= 3 for p in parts):
+            return False
+    return True
 
+def question_fits_answer(question, answer):
+    """A number or amount answer needs a question that asks for a number or amount
+    ('What is the peak called?' cannot have '2,463 metres' as its answer).
+    Only short answers containing a digit are treated as quantities, so
+    'ninety-one steps' or 'three long flashes and one short' are not forced into a 'how many' question."""
+    a = answer.strip()
+    # 'How many ...?' needs an answer that is a number or amount.
+    if _COUNT_QUESTION.search(question) and not (re.search(r"\d", a) or _NUMBER_WORD.search(a)):
+        return False
+    if len(a.split()) > 3 or not _ANSWER_IS_QUANTITY.search(a):
+        return True
+    return bool(_QUANTITY_QUESTION.search(question))
+
+def target_problem(answer, max_words):
+    """Why an answer phrase is a poor quiz target, or None if it is fine."""
+    if looks_like_list(answer):
+        return "target is a list or fragment"
+    if len(answer.split()) > max_words:
+        return f"answer longer than {max_words} words"
+    words = [w.casefold() for w in re.findall(r"[\w'’-]+", answer)]
+    if words and (words[-1] in _FUNCTION_WORDS or words[0] in _BAD_START_WORDS):
+        return "target starts or ends with a function word"
+    return None
+
+def _first_usable_question(answer, passage, lang, used_questions):
+    """First mT5 question for this answer phrase that passes every check, or None.
+    Candidates are ranked best first by qselect.rank_questions; nothing is removed by ranking."""
+    for candidate in rank_questions(make_questions(answer, passage, lang), answer, passage):
+        if candidate.lower() in used_questions:
+            print(f"[Quiz] Skipped (same question as an earlier one): {candidate}")
+            continue
+        if not question_looks_like_question(candidate):
+            print(f"[Quiz] Dropped (no question word): {candidate}")
+            continue
+        if lang == "en" and question_is_garbled(candidate):
+            print(f"[Quiz] Dropped (ungrammatical question): {candidate}")
+            continue
+        if copies_passage(candidate, passage):
+            print(f"[Quiz] Dropped (question copies {QG_MAX_COPY}+ words in a row from the passage): {candidate}")
+            continue
+        if not question_fits_answer(candidate, answer):
+            print(f"[Quiz] Dropped (question type does not fit the answer): {candidate} -> {answer}")
+            continue
+        if answer_matches(candidate, answer, passage, lang):
+            return candidate
+        print(f"[Quiz] Dropped (mT5 answer mismatch): {candidate}")
+    return None
+
+def sentences_with(passage, span):
+    """The passage sentences that contain the verified answer span."""
+    sentences = re.split(r"(?<=[.!?])\s+", passage)
+    s_ = _cmp(span)
+    return [x for x in sentences if _contains(s_, _cmp(x))]
+
+def distractor_in_answer_sentence(distractors, passage, span):
+    """First distractor that is also written in the same sentence as the answer, or None.
+    The passage then says it too, so it can be defensible (Albay and Bicol in one sentence)."""
+    sents = sentences_with(passage, span)
+    for d in distractors:
+        c = _cmp(d)
+        if c and any(_contains(c, _cmp(x)) for x in sents):
+            return d
+    return None
+
+def support_for(item, idx, option_items, total):
+    """SEA-LION's entry for this question, matched by question text rather than by position.
+    Falls back to position only when it returned exactly one entry per question."""
+    key = _cmp(item["q"])
+    for entry in option_items:
+        if isinstance(entry, dict) and _cmp(entry.get("q", "")) == key:
+            return entry
+    if len(option_items) == total and isinstance(option_items[idx], dict):
+        return option_items[idx]
+    return None
+
+
+def parse_json_response(raw: str) -> dict:
+    clean = raw.strip()
+
+    if "```json" in clean:
+        clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in clean:
+        clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+
+    return json.loads(clean)
+
+
+def repair_json_questions(raw_options):
+    """SEA-LION's JSON with trailing commas dropped and any unclosed string,
+    bracket or brace shut again. Their repair, lifted out of generate_quiz so
+    every chunk can use it."""
+    repaired = re.sub(r",\s*([}\]])", r"\1", raw_options.strip())
+
+    # Close missing JSON structures when the output is truncated.
     try:
-        answer_data = parse_json_response(raw_answers)
-        answer_items = answer_data.get("items", [])
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not parse answer phrases from SEA-LION: {e}"
-        )
+        options_data = parse_json_response(repaired)
+    except json.JSONDecodeError:
+        repaired = repaired.rstrip()
 
-    # STEP 2: Use T5 to generate the actual question wording.
-    generated = []
-    used_questions = set()
-    used_answers = set()
+        stack = []
+        in_string = False
+        escaped = False
 
-    for item in answer_items:
-        if len(generated) >= n:
-            break
+        for char in repaired:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char in "[{":
+                    stack.append("]" if char == "[" else "}")
+                elif char in "]}":
+                    if stack and stack[-1] == char:
+                        stack.pop()
 
-        answer = str(item.get("answer", "")).strip()
-        kind = str(item.get("kind", "Literal")).strip()
+        if in_string:
+            repaired += '"'
 
-        if not answer:
-            continue
+        repaired += "".join(reversed(stack))
 
-        start = passage.lower().find(answer.lower())
-        if start == -1:
-            continue
+        options_data = parse_json_response(repaired)
+    return options_data.get("questions", [])
 
-        exact_answer = passage[start:start + len(answer)]
 
-        if exact_answer.lower() in used_answers:
-            continue
-
-        prompt = f"generate question: answer: {exact_answer} context: {passage}"
-
-        inputs = qg_tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=768
-        )
-        inputs = {key: value.to(qg_device) for key, value in inputs.items()}
-
-        with torch.inference_mode():
-            outputs = qg_model.generate(
-                **inputs,
-                max_new_tokens=48,
-                num_beams=4,
-                no_repeat_ngram_size=3,
-                early_stopping=True,
-                use_cache=True
-            )
-
-        question = qg_tokenizer.decode(
-            outputs[0],
-            skip_special_tokens=True
-        ).strip()
-
-        if not question or question.lower() in used_questions:
-            continue
-
-        qa_prompt = f"answer question: question: {question} context: {passage}"
-        qa_inputs = qg_tokenizer(qa_prompt, return_tensors="pt", truncation=True, max_length=768)
-        qa_inputs = {k: v.to(qg_device) for k, v in qa_inputs.items()}
-        with torch.inference_mode():
-            qa_out = qg_model.generate(**qa_inputs, max_new_tokens=48, num_beams=4, use_cache=True)
-        predicted = qg_tokenizer.decode(qa_out[0], skip_special_tokens=True).strip()
-
-        def _n(s): return re.sub(r"\W+", " ", s.lower()).strip()
-        if not _n(predicted) or not (_n(exact_answer) in _n(predicted) or _n(predicted) in _n(exact_answer)):
-            print(f"[Quiz] Dropped (mT5 answer mismatch): {question} -> {predicted}")
-            continue
-
-        used_answers.add(exact_answer.lower())
-        used_questions.add(question.lower())
-
-        generated.append({
-            "kind": kind,
-            "q": question,
-            "correct_text": exact_answer
-        })
-
-    # STEP 2b: mT5 is the question generator, but on this hardware it often
-    # returns nothing usable, and one empty list killed the whole quiz. When it
-    # comes up short, SEA-LION writes the wording for the targets mT5 could not
-    # handle, so the student still gets a quiz. Every question says which model
-    # wrote it, so an evaluation can count the two separately or drop the
-    # fallback ones. Set QG_FALLBACK=0 to turn this off and go back to failing.
-    for item in generated:
-        item["source"] = "mt5"
-
-    if len(generated) < n and QG_FALLBACK:
-        done = {g["correct_text"].lower() for g in generated}
-        left = [i for i in answer_items
-                if str(i.get("answer", "")).strip()
-                and str(i.get("answer", "")).strip().lower() not in done]
-        if left:
-            made = sealion_questions(passage, left[: n - len(generated)])
-            for q in made:
-                if q["q"].lower() in used_questions:
-                    continue
-                used_questions.add(q["q"].lower())
-                generated.append(q)
-            print(f"[Quiz] mT5 fell short, SEA-LION wrote {len(made)} question(s)")
-
-    if not generated:
-        raise RuntimeError(
-            "Neither mT5 nor the fallback could turn the selected answer phrases into questions."
-            if QG_FALLBACK else
-            "T5 could not generate questions from the selected answer phrases."
-        )
-
-    print(f"[Quiz] Requested questions: {n}")
-    print(f"[Quiz] Answer targets returned: {len(answer_items)}")
-    print(f"[Quiz] by mT5: {sum(1 for g in generated if g.get('source') == 'mt5')}, "
-          f"by SEA-LION fallback: {sum(1 for g in generated if g.get('source') == 'sealion')}")
-    print(f"[Quiz] questions: {generated}")
-
-    # STEP 3: Use SEA-LION to create the answer options and supporting details.
-    # Keep the question wording generated by T5 unchanged.
-    questions_for_sealion = [
-        {
-            "kind": item["kind"],
-            "q": item["q"],
-            "correct_answer": item["correct_text"]
-        }
-        for item in generated
-    ]
-
-    
+def build_options_prompt(passage, chunk, why_language):
+    """The options prompt for one chunk of questions. Lifted out of generate_quiz
+    unchanged so it can be built once per chunk instead of once per quiz."""
     options_prompt = f"""
-Create {len(questions_for_sealion)} reading-comprehension multiple-choice questions.
+Create {len(chunk)} reading-comprehension multiple-choice questions.
 
 PASSAGE:
 {passage}
 
 QUESTIONS AND CORRECT ANSWERS:
-{json.dumps(questions_for_sealion, ensure_ascii=False, indent=2)}
+{json.dumps(chunk, ensure_ascii=False, indent=2)}
 
 RULES:
 
@@ -1079,6 +1221,9 @@ ANSWER CHOICES:
 - Do not introduce unrelated concepts that are absent from the passage.
 - Avoid using a fragment from the passage as an answer when a concise,
   grammatically complete answer can be written.
+- A distractor must not be a broader or narrower version of the correct answer (for example a
+  region, country or category that contains the answer), and must not be something the passage
+  also says is true for this question. Only one option may be a correct answer.
 - Never create two options that express the same action or fact.
 - Distractors must be clearly different from the correct answer.
 - Do not change the subject of an action in a way that makes
@@ -1096,7 +1241,24 @@ ANSWER CHOICES:
 - Before returning the JSON, verify that all 4 options are distinct and only one answers the question correctly.
 - If you cannot create 3 distinct, plausible distractors, reconsider the question and its answer.
 
+QUESTION CHECK:
+- Set "question_ok" to false if the supplied question and correct answer do not fit each other:
+  the question asks for a different kind of thing than the answer (for example it asks for a name
+  but the answer is a number), it reverses who does what to whom, more than one answer
+  would be correct according to the passage, or it is not a natural, grammatical question in the
+  language of the passage. Otherwise set it to true.
+- Never reinterpret or reword the supplied question inside "q" or "why". Report the problem with
+  "question_ok": false instead; "q" itself must always stay unchanged.
+- When "question_ok" is false, write "better_question": one short, natural question in the language of
+  the passage whose only correct answer is exactly the supplied correct answer. Use your own wording
+  (do not copy more than 6 words in a row from the passage). When "question_ok" is true,
+  set "better_question" to an empty string.
+
 WHY:
+- Write the explanation in {why_language}, the language of the passage.
+- The explanation must match the question exactly as written.
+- Use only {why_language} words in the explanation. Do not mix in words from another language
+  (for example no English words such as "offer" in a Filipino explanation).
 - Explain briefly why the correct answer answers the question.
 - Use your own words rather than copying the evidence verbatim.
 - Do not introduce facts that are unsupported by the passage.
@@ -1128,6 +1290,8 @@ Required format:
     {{
       "kind": "Literal",
       "q": "Question text unchanged",
+      "question_ok": true,
+      "better_question": "",
       "correct_option": "Concise correct answer",
       "distractors": [
         "Incorrect option A",
@@ -1139,86 +1303,302 @@ Required format:
     }}
   ]
 }}
+"""
+    return options_prompt
+
+
+def generate_quiz(ask: QuizAsk) -> list:
+    n = max(2, min(ask.n, QUIZ_MAX_QUESTIONS))
+    passage = ask.text.strip()[:4000]
+
+    if not passage:
+        raise ValueError("The passage cannot be empty.")
+    
+    lang = detect_lang(passage)
+    max_words = MAX_ANSWER_WORDS.get(lang, 8)
+    why_language = "Filipino" if lang == "fil" else "English"
+    _clock = [time.perf_counter(), time.perf_counter()]   # [last lap, start]
+
+    def lap(label):
+        now = time.perf_counter()
+        print(f"[Quiz][time] {label}: {now - _clock[0]:.1f}s")
+        _clock[0] = now
+    # Ask for a few extra targets: some questions fail the mT5 answer check and are dropped.
+    n_targets = n + 3
+
+
+    # STEP 1: Use SEA-LION to identify answer phrases in the passage.
+    # T5 requires an answer phrase to be highlighted in the context.
+    answer_prompt = f"""
+Read the passage and select exactly {n_targets} DISTINCT answer targets for a
+reading-comprehension quiz.
+
+QUESTION MIX:
+- Select approximately half literal and half inferential targets.
+- Include at least one inferential target whenever the passage supports it.
+
+LITERAL:
+- The answer is directly stated in the passage.
+- The student can find the answer without drawing a conclusion.
+
+INFERENTIAL:
+- The answer requires connecting clues or drawing a reasonable conclusion.
+- Choose targets that support questions about causes, motivations,
+  implications, or lessons.
+- Do not label a directly stated fact as inferential merely to meet the mix.
+
+TARGET SELECTION:
+- Each answer target must be a short phrase of at most {max_words} words (a name,
+  date, number, place, term or short noun phrase), never a full sentence.
+- Copy each answer target exactly from the passage.
+- The target must be a complete answer on its own. If the phrase only makes sense with a
+  following "of ..." part, include it (for example "ninety-one steps of the lighthouse", not "steps").
+  Prefer names, places, dates, numbers and who/what nouns over adjectives and verbs.
+- Each target must be ONE continuous phrase: a single noun phrase, name, place, number or date.
+  Never a list of several items, never words joined with commas or semicolons, and never a bare
+  adjective or description (for example not "dark, gloomy").
+- For literal targets, select a meaningful fact or detail.
+- For inferential targets, select a passage detail that provides evidence
+  for a conclusion or interpretation.
+- Select different parts of the passage.
+- Do not repeat answer targets.
+- Do not invent facts.
+
+Return valid JSON only, using this format:
+{{
+  "items": [
+    {{
+      "kind": "Literal",
+      "answer": "exact phrase copied from the passage"
+    }},
+    {{
+      "kind": "Inferential",
+      "answer": "exact phrase copied from the passage"
+    }}
+  ]
+}}
+
+Return exactly {n_targets} items if the passage supports that many distinct targets.
 
 Passage:
 {passage}
-
-Questions and correct answers:
-{json.dumps(questions_for_sealion, ensure_ascii=False)}
 """
 
-    raw_options = ask_sealion(
-    "You are a careful quiz writer. Follow every quiz rule exactly. "
-    "Return only valid JSON with concise options, a correct answer index, "
-    "a matching explanation, and evidence copied from the passage.",
-        options_prompt,
+    raw_answers = ask_sealion(
+        "Select answer phrases from the supplied passage. Return valid JSON only.",
+        answer_prompt,
         temperature=0.2,
-        max_tokens=1200,
-        use_adapter=False,  # base model: this step must state the correct answer
+        max_tokens=60 * n_targets + 100,
+        use_adapter=False,  # the Socratic adapter is trained to avoid stating answers
     )
 
+    lap("step 1, SEA-LION picks answer targets")
     try:
-        options_data = parse_json_response(raw_options)
-        option_items = options_data.get("questions", [])
-
-    
-    except json.JSONDecodeError as e:
-        print("\n[Quiz] SEA-LION returned invalid JSON.")
-        print(f"[Quiz] JSON error: {e}")
-        print("[Quiz] Attempting to repair JSON...")
-
-        repaired = re.sub(r",\s*([}\]])", r"\1", raw_options.strip())
-
-        # Close missing JSON structures when the output is truncated.
-        try:
-            options_data = parse_json_response(repaired)
-        except json.JSONDecodeError:
-            repaired = repaired.rstrip()
-
-            stack = []
-            in_string = False
-            escaped = False
-
-            for char in repaired:
-                if in_string:
-                    if escaped:
-                        escaped = False
-                    elif char == "\\":
-                        escaped = True
-                    elif char == '"':
-                        in_string = False
-                else:
-                    if char == '"':
-                        in_string = True
-                    elif char in "[{":
-                        stack.append("]" if char == "[" else "}")
-                    elif char in "]}":
-                        if stack and stack[-1] == char:
-                            stack.pop()
-
-            if in_string:
-                repaired += '"'
-
-            repaired += "".join(reversed(stack))
-
-            options_data = parse_json_response(repaired)
-
-        option_items = options_data.get("questions", [])
-        print("[Quiz] JSON repair succeeded.")
-
+        answer_data = parse_json_response(raw_answers)
+        answer_items = answer_data.get("items", [])
     except Exception as e:
         raise RuntimeError(
-            f"Could not parse multiple-choice options from SEA-LION: {e}"
+            f"Could not parse answer phrases from SEA-LION: {e}"
         )
+
+    # STEP 2: Use T5 to generate the actual question wording.
+    generated = []
+    used_questions = set()
+    used_answers = set()
+
+    for item in answer_items:
+        if len(generated) >= n:
+            break
+
+        answer = str(item.get("answer", "")).strip()
+        kind = str(item.get("kind", "Literal")).strip()
+
+        if not answer:
+            continue
+
+        problem = target_problem(answer, max_words)
+        if problem == "target is a list or fragment":
+            print(f"[Quiz] Skipped ({problem}): {answer}")
+            continue
+
+        start = passage.lower().find(answer.lower())
+        if start == -1:
+            print(f"[Quiz] Skipped (target not found word for word in the passage): {answer}")
+            continue
+
+        exact_answer = passage[start:start + len(answer)]
+
+        if exact_answer.lower() in used_answers:
+            print(f"[Quiz] Skipped (target already used): {exact_answer}")
+            continue
+
+        problem = target_problem(exact_answer, max_words)
+        if problem:
+            print(f"[Quiz] Skipped ({problem}): {exact_answer}")
+            continue
+
+        # A target cut off before an "of ..." phrase makes mT5 drop the verb ("What was the
+        # lighthouse to light the lamp?" for "ninety-one steps"). English: try the longer phrase first.
+        variants = [exact_answer]
+        if lang == "en":
+            mo = _OF_PHRASE.match(passage[start + len(exact_answer):])
+            if mo:
+                longer = passage[start:start + len(exact_answer) + mo.end()]
+                if len(longer.split()) <= max_words and longer.lower() not in used_answers:
+                    variants.insert(0, longer)
+
+        # Try the best few questions for each variant; keep the first one mT5 can answer back.
+        question = None
+        for variant in variants:
+            question = _first_usable_question(variant, passage, lang, used_questions)
+            if question:
+                if variant != exact_answer:
+                    print(f"[Quiz] Using the longer target: {variant}")
+                exact_answer = variant
+                break
+        if not question:
+            print(f"[Quiz] No usable question for target: {exact_answer}")
+            continue
+
+        used_answers.add(exact_answer.lower())
+        used_questions.add(question.lower())
+
+        generated.append({
+            "kind": kind,
+            "q": question,
+            "correct_text": exact_answer
+        })
+
+    lap("step 2, mT5 questions + answer checks (CPU unless QG_DEVICE=cuda)")
+
+    # mT5 is the question generator, but on this hardware it often comes up
+    # short, and an empty list used to kill the whole quiz. When it does,
+    # SEA-LION words the questions mT5 could not handle, so the student still
+    # gets a quiz. Each question records which model wrote it, so an evaluation
+    # can count the two apart. QG_FALLBACK=0 goes back to failing.
+    for item in generated:
+        item.setdefault("source", "mt5")
+
+    if len(generated) < n and QG_FALLBACK:
+        done = {g["correct_text"].lower() for g in generated}
+        left = [i for i in answer_items
+                if str(i.get("answer", "")).strip()
+                and str(i.get("answer", "")).strip().lower() not in done
+                and not target_problem(str(i.get("answer", "")).strip(), max_words)]
+        if left:
+            made = sealion_questions(passage, left[: n - len(generated)])
+            kept_n = 0
+            for q in made:
+                if q["q"].lower() in used_questions:
+                    continue
+                if (not question_looks_like_question(q["q"])
+                        or (lang == "en" and question_is_garbled(q["q"]))
+                        or copies_passage(q["q"], passage)
+                        or not question_fits_answer(q["q"], q["correct_text"])):
+                    print(f"[Quiz] Dropped the SEA-LION-written question (failed a check): {q['q']}")
+                    continue
+                kept_n += 1
+                used_questions.add(q["q"].lower())
+                generated.append(q)
+            print(f"[Quiz] mT5 fell short, SEA-LION wrote {kept_n} usable question(s) of {len(made)}")
+
+    if not generated:
+        raise RuntimeError(
+            "Neither mT5 nor the fallback could turn the selected answer phrases into questions."
+            if QG_FALLBACK else
+            "T5 could not generate questions from the selected answer phrases."
+        )
+
+    print(f"[Quiz] Requested questions: {n}")
+    print(f"[Quiz] Answer targets returned: {len(answer_items)}")
+    print(f"[Quiz] questions by mT5: {sum(1 for g in generated if g.get('source') == 'mt5')}, "
+          f"by the SEA-LION fallback: {sum(1 for g in generated if g.get('source') == 'sealion')}")
+    print(f"[Quiz] questions: {generated}")
+
+    # STEP 3: Use SEA-LION to create the answer options and supporting details.
+    # Keep the question wording generated by T5 unchanged.
+    questions_for_sealion = [
+        {
+            "kind": item["kind"],
+            "q": item["q"],
+            "correct_answer": item["correct_text"]
+        }
+        for item in generated
+    ]
+
+    
+
+    def options_for(chunk):
+        """One SEA-LION call for a few questions. The budget follows the count,
+        because a fixed 1200 tokens ran out as the quiz grew and the output was
+        cut off mid-JSON. A chunk that will not parse costs only its own
+        questions rather than the whole quiz."""
+        raw_options = ask_sealion(
+            "You are a careful quiz writer. Follow every quiz rule exactly. "
+            "Return only valid JSON with concise options, a correct answer index, "
+            "a matching explanation, and evidence copied from the passage.",
+            build_options_prompt(passage, chunk, why_language),
+            temperature=0.2,
+            max_tokens=250 * len(chunk) + 200,
+            use_adapter=False,  # base model: this step must state the correct answer
+        )
+        try:
+            return parse_json_response(raw_options).get("questions", [])
+        except json.JSONDecodeError as e:
+            print(f"[Quiz] SEA-LION returned invalid JSON for this chunk: {e}")
+            print("[Quiz] Attempting to repair JSON...")
+            try:
+                return repair_json_questions(raw_options)
+            except Exception as e2:
+                print(f"[Quiz] Repair failed, losing {len(chunk)} question(s): {e2}")
+                return []
+        except Exception as e:
+            print(f"[Quiz] Could not read the options for this chunk: {e}")
+            return []
+
+    option_items = []
+    for i in range(0, len(questions_for_sealion), QUIZ_OPTION_CHUNK):
+        chunk = questions_for_sealion[i:i + QUIZ_OPTION_CHUNK]
+        option_items.extend(options_for(chunk))
+    if not option_items:
+        raise RuntimeError("SEA-LION returned no usable options for any question.")
 
 
     # STEP 4: Combine T5 questions with SEA-LION's supporting quiz fields.
     cleaned = []
 
-    for item, support in zip(generated, option_items):
+    for idx, item in enumerate(generated):
+        support = support_for(item, idx, option_items, len(generated))
+        if support is None:
+            print(f"[Quiz] No options returned for: {item['q']}")
+            continue
         correct_text = item["correct_text"]
+
+        flag = support.get("question_ok")
+        print(f"[Quiz] SEA-LION question_ok={flag!r} for: {item['q']}")
+        if str(flag).strip().lower() in ("false", "no", "0"):
+            better = str(support.get("better_question", "")).strip()
+            ok = bool(better) and _cmp(better) != _cmp(item["q"])
+            ok = ok and not copies_passage(better, passage)
+            ok = ok and not (lang == "en" and question_is_garbled(better))
+            ok = ok and question_fits_answer(better, correct_text)
+            ok = ok and answer_matches(better, correct_text, passage, lang)
+            if not ok:
+                print(f"[Quiz] Rejected (SEA-LION says the question does not fit its answer, "
+                      f"and its rewrite {better!r} failed the checks): {item['q']}")
+                continue
+            print(f"[Quiz] Rewrote question: {item['q']} -> {better}")
+            item = dict(item, q=better)
+
         correct_option = str(support.get("correct_option", "")).strip()
         distractors = support.get("distractors", [])
+
+        # The keyed answer must still say what mT5 verified, otherwise the "why" and the
+        # evidence may explain a different answer.
+        if not option_matches_span(correct_option, correct_text):
+            print(f"[Quiz] Rejected: option '{correct_option}' drifted from verified answer "
+                  f"'{correct_text}' for: {item['q']}")
+            continue
 
         if (
             not correct_option
@@ -1234,6 +1614,24 @@ Questions and correct answers:
             print(f"[Quiz] Rejected empty option for: {item['q']}")
             continue
 
+        distractors = clean_distractors(distractors, correct_option, correct_text)
+        if len(distractors) != 3:
+            print(f"[Quiz] Rejected: a distractor repeated or overlapped the answer for: {item['q']}")
+            continue
+
+        clash = distractor_in_answer_sentence(distractors, passage, correct_text) if SAME_SENTENCE_CHECK else None
+        if clash:
+            print(f"[Quiz] Rejected: distractor '{clash}' is in the same passage sentence as the answer "
+                  f"'{correct_text}', so it may also be correct: {item['q']}")
+            continue
+
+        # If only some options start with a capital letter, the odd one out gives the answer away
+        # ("rainforests above" among capitalised distractors). Capitalise them all in that case.
+        _firsts = [o[:1] for o in [correct_option] + distractors if o[:1].isalpha()]
+        if any(c.isupper() for c in _firsts) and any(c.islower() for c in _firsts):
+            correct_option = correct_option[:1].upper() + correct_option[1:]
+            distractors = [d[:1].upper() + d[1:] for d in distractors]
+
         all_options = [correct_option] + distractors
         normalized_options = [
             " ".join(option.casefold().split())
@@ -1244,7 +1642,6 @@ Questions and correct answers:
             print(f"[Quiz] Rejected duplicate options for: {item['q']}")
             continue
 
-        import random
         random.shuffle(all_options)
 
         options = all_options
@@ -1314,6 +1711,13 @@ Questions and correct answers:
             print(f"[Quiz] Evidence: {evidence}")
             continue
         evidence = found   # the passage's own wording, not the model's copy of it
+        if not _contains(_cmp(correct_text), _cmp(evidence)):
+            sents = sentences_with(passage, correct_text)
+            if not sents:
+                print(f"[Quiz] Rejected: evidence does not contain the answer '{correct_text}': {item['q']}")
+                continue
+            print(f"[Quiz] Replaced evidence (it did not contain '{correct_text}') with the passage sentence that does")
+            evidence = sents[0]
 
         if not why or normalize_text(why) == normalize_text(evidence):
             print(
@@ -1335,22 +1739,35 @@ Questions and correct answers:
             print(f"[Quiz] Rejected duplicate final options: {item['q']}")
             continue
 
+        # Q1 to Q6: the giveaways that let a student pick the answer without
+        # having understood the passage. Every option rule above lives in the
+        # prompt, where it is a request. These are checked.
+        flaws = check_item(item["q"], options, final_answer_index, passage, lang)
+        if flaws:
+            print(f"[Quiz] Rejected, the answer gives itself away {flaws}: {item['q']}")
+            continue
+
+        # The kind was decided in step 1 against an answer phrase, before this
+        # question existed. Judge it from the finished question instead.
+        kind_now = label_for(item["q"], correct_option, passage)
+        if kind_now != item["kind"]:
+            print(f"[Quiz] Relabelled {item['kind']} -> {kind_now}: {item['q']}")
+
         cleaned.append({
-            "kind": item["kind"],
+            "kind": kind_now,
             "q": item["q"],
             "options": options,
             "answer": final_answer_index,
             "why": why,
             "evidence": evidence,
-            # Which model wrote the question itself, so an evaluation can
-            # separate mT5's output from the fallback's.
+            # which model wrote the question, so an evaluation can separate them
             "source": item.get("source", "mt5")
         })
 
     print(f"[Quiz] Questions returned by SEA-LION: {len(option_items)}")
     print(f"[Quiz] Questions surviving validation: {len(cleaned)} "
-          f"(mT5 {sum(1 for c in cleaned if c['source'] == 'mt5')}, "
-          f"fallback {sum(1 for c in cleaned if c['source'] == 'sealion')})")
+          f"(Literal {sum(1 for c in cleaned if c['kind'] == 'Literal')}, "
+          f"Inferential {sum(1 for c in cleaned if c['kind'] == 'Inferential')})")
 
     if not cleaned:
         print("[Quiz] DEBUG: No questions survived final validation.")
@@ -1362,6 +1779,7 @@ Questions and correct answers:
             "Check the backend terminal for DEBUG output."
         )
 
+    print(f"[Quiz][time] TOTAL: {time.perf_counter() - _clock[1]:.1f}s")
     return cleaned
 
 
@@ -1402,11 +1820,6 @@ def health():
 
 # After this many answers that did not show understanding, the coach explains outright.
 GIVEUP_AFTER = int(os.getenv("GIVEUP_AFTER", "3"))
-
-# When mT5 cannot word a question, let SEA-LION write it rather than fail the
-# whole quiz. Each question still records which model wrote it. QG_FALLBACK=0
-# restores the old behaviour, for a run that must be mT5 only.
-QG_FALLBACK = os.getenv("QG_FALLBACK", "1") != "0"
 
 # "What do you mean?" and "huh?" are questions, but they say the student didn't understand.
 _CONFUSED = re.compile(
