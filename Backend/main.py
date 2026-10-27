@@ -1,162 +1,844 @@
 """
-Reading Partner backend (temporary brain: Gemini).
+Reading Partner backend.
 
 The widget (index.html) talks to three addresses on this server:
+    POST /partner   ->   { "reply": "..." }       a hint while the student is debugging
+    POST /quiz      ->   { "questions": [ ... ] } a quiz written from the student's text
+    POST /checkin   ->   { "prompt": "..." }      a short mid-reading check-in question
 
-    POST /partner   ->  { "reply": "..." }        a hint while the student is debugging
-    POST /quiz      ->  { "questions": [ ... ] }  a quiz written from the student's text
-    POST /checkin   ->  { "prompt": "..." }       a short mid-reading check-in question
-
-Only the functions marked "THE AI CALL" talk to Gemini. When you switch to your
-own fine-tuned model later, those are the only places you change.
+Usage:
+    1. On terminal, enter: huggingface-cli login
+    2. Complete steps given and paste token
+    3. Run python main.py
+    4. Open index.html to test the website    
 """
 import json
 import os
 import random
+import time
 from typing import List, Optional
+import re
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoModelForSeq2SeqLM
+from pathlib import Path
+from peft import PeftModel
+import contextlib
+import threading
 
-load_dotenv()  # reads the .env file (your secret key lives there)
+import grounding as gr  # rule-based checks against the passage (see GROUNDING_RULES_README.md)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# If you get a "model not found" error, open Google AI Studio, copy the name
-# of a current "Flash" model, and put it in your .env file as GEMINI_MODEL.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
-client = None
-types = None
-if GEMINI_API_KEY:
-    from google import genai
-    from google.genai import types  # noqa: F811
+# Load SEALION Model
+SEALION_MODEL_NAME = os.getenv("SEALION_MODEL", "aisingapore/Gemma-SEA-LION-v3-9B-IT")
+ADAPTER_PATH = os.getenv(
+    "SEALION_ADAPTER",
+    str(Path(__file__).resolve().parent / "checkpoints" / "socratic-lora-v2" / "best"),
+)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+print(f"Loading base model {SEALION_MODEL_NAME} + adapter {ADAPTER_PATH} (this may take a moment)...")
+quantization_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+)
+
+tokenizer = AutoTokenizer.from_pretrained(SEALION_MODEL_NAME, use_fast=False)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+
+model = AutoModelForCausalLM.from_pretrained(
+    SEALION_MODEL_NAME,
+    quantization_config=quantization_config,
+    device_map={"": 0},
+    low_cpu_mem_usage=True,
+)
+
+if ADAPTER_PATH.strip().lower() == "none":
+    print("[adapter] SEALION_ADAPTER=none: running the base SEA-LION model only. "
+          "Quizzes work, but the reading coach will not use the Socratic adapter.")
+elif (
+    # a local folder that is missing or has no adapter_config.json (a "user/repo" id is left to the Hub)
+    (os.path.isdir(ADAPTER_PATH) and not os.path.isfile(os.path.join(ADAPTER_PATH, "adapter_config.json")))
+    or (not os.path.exists(ADAPTER_PATH) and not re.fullmatch(r"[\w.\-]+/[\w.\-]+", ADAPTER_PATH))
+):
+    raise SystemExit(
+        f"No adapter found at {ADAPTER_PATH}\n"
+        "Copy your trained adapter folder there, point SEALION_ADAPTER at it, "
+        "or set SEALION_ADAPTER=none to run without the adapter."
+    )
+else:
+    model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+model.eval()
+
+model.generation_config.max_length = None
+print("SEALION Model loaded successfully!")
+
+# Load T5 Model
+from qg_format import qg_input, qa_input, detect_lang
+from qselect import rank_questions
+from quizrules import check_item, label_for
+
+T5_MODEL_NAME = os.getenv("QG_MODEL", "Aiken1016/MT5_Second_model")  # fix the username if different
+QG_CHECK_ANSWER = os.getenv("QG_CHECK_ANSWER", "1") != "0"
+
+# The most questions one quiz may hold. The app offers 3, 5 and 10, and this has
+# to agree with it: a quiz was silently capped at 5 while the app offered 20, so
+# asking for 10 gave you 5 with no error anywhere.
+QUIZ_MAX_QUESTIONS = int(os.getenv("QUIZ_MAX_QUESTIONS", "10"))
+# SEA-LION writes the options for this many questions per call. One call for the
+# whole quiz ran out of tokens as the count grew, and a single bad brace lost
+# every question instead of one chunk.
+QUIZ_OPTION_CHUNK = int(os.getenv("QUIZ_OPTION_CHUNK", "3"))
+
+print(f"Loading mT5 question-generation model: {T5_MODEL_NAME}...")
+qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
+qg_model.to(qg_device).eval()
+
+def _qg_generate(prompt: str, **gen_kwargs) -> str:
+    inputs = qg_tokenizer(prompt, return_tensors="pt", truncation=True, max_length=768)
+    inputs = {k: v.to(qg_device) for k, v in inputs.items()}
+    with torch.inference_mode():
+        out = qg_model.generate(**inputs, max_new_tokens=48, num_beams=4, use_cache=True, **gen_kwargs)
+    return qg_tokenizer.decode(out[0], skip_special_tokens=True).strip()
+
+def make_question(answer, passage, lang):
+    return _qg_generate(qg_input(answer, passage, lang), no_repeat_ngram_size=3, early_stopping=True)
+
+def answer_matches(question, answer, passage, lang):
+    if not QG_CHECK_ANSWER:
+        return True
+    predicted = _qg_generate(qa_input(question, passage, lang))
+    n = lambda s: re.sub(r"\W+", " ", s.lower()).strip()
+    return bool(n(predicted)) and (n(answer) in n(predicted) or n(predicted) in n(answer))
+
+# How many questions to try per answer phrase, and how long an answer phrase may be.
+# Measured on held-out FilQuAD: Filipino answers of 4-8 words passed the round-trip check
+# about 49% of the time, 1-3 words about 66%. English showed no such drop.
+QG_CANDIDATES = max(1, int(os.getenv("QG_CANDIDATES", "3")))
+QG_SAMPLE = os.getenv("QG_SAMPLE", "1") != "0"
+MAX_ANSWER_WORDS = {
+    "fil": int(os.getenv("QG_MAX_WORDS_FIL", "3")),
+    "en": int(os.getenv("QG_MAX_WORDS_EN", "8")),   # 8 = longest answer mT5 was trained on
+}
+
+def make_questions(answer, passage, lang, k=QG_CANDIDATES):
+    """Top-k beam candidates for one answer phrase, best first, without duplicates.
+    The first one is the same question make_question() returns."""
+    inputs = qg_tokenizer(qg_input(answer, passage, lang), return_tensors="pt",
+                          truncation=True, max_length=768)
+    inputs = {key: v.to(qg_device) for key, v in inputs.items()}
+    with torch.inference_mode():
+        out = qg_model.generate(**inputs, max_new_tokens=48, num_beams=max(4, k),
+                                num_return_sequences=k, no_repeat_ngram_size=3,
+                                early_stopping=True, use_cache=True)
+    seen, result = set(), []
+    for seq in out:
+        q = qg_tokenizer.decode(seq, skip_special_tokens=True).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            result.append(q)
+
+    n_beam = len(result)
+
+    # Beam search often returns near-identical questions. When it gives fewer than k different
+    # ones, first try diverse beam search (beam groups that are penalised for repeating each other),
+    # then hot sampling. QG_SAMPLE=0 turns both off.
+    def _add(seqs):
+        for seq in seqs:
+            if len(result) >= k:
+                break
+            q = qg_tokenizer.decode(seq, skip_special_tokens=True).strip()
+            if q and q.lower() not in seen:
+                seen.add(q.lower())
+                result.append(q)
+
+    n_diverse = 0
+    if QG_SAMPLE and len(result) < k:
+        try:
+            with torch.inference_mode():
+                diverse = qg_model.generate(**inputs, max_new_tokens=48, num_beams=6, num_beam_groups=3,
+                                            diversity_penalty=1.5, num_return_sequences=6,
+                                            no_repeat_ngram_size=3, do_sample=False, use_cache=True)
+            _add(diverse)
+        except Exception as e:
+            print(f"[Quiz] Diverse beam search unavailable ({type(e).__name__}: {str(e)[:80]}); using sampling only")
+        n_diverse = len(result) - n_beam
+    if QG_SAMPLE and len(result) < k:
+        with torch.inference_mode():
+            sampled = qg_model.generate(**inputs, max_new_tokens=48, do_sample=True, top_k=50, top_p=0.95,
+                                        temperature=1.3, num_return_sequences=k + 4,
+                                        no_repeat_ngram_size=3, use_cache=True)
+        _add(sampled)
+    print(f"[Quiz] Candidates for '{answer}': {n_beam} from beam search, {n_diverse} from diverse beams, "
+          f"{len(result) - n_beam - n_diverse} sampled")
+    return result
+
 
 app = FastAPI(title="Reading Partner backend")
 
-# Lets the widget (a different address) talk to this backend.
-# For the real launch, replace "*" with your real website address.
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+print(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+_SYSTEM_SUPPORTED = None
+_GEN_LOCK = threading.Lock()
 
-def ask_gemini(system_rules: str, prompt: str, *, temperature: float, max_tokens: int, schema=None):
-    """THE AI CALL. Every feature goes through this one function."""
-    if client is None:
-        raise RuntimeError("No Gemini key found. Check your .env file.")
-    config = dict(
-        system_instruction=system_rules,
-        temperature=temperature,
-        max_output_tokens=max_tokens,
-    )
-    if schema is not None:
-        config["response_mime_type"] = "application/json"
-        config["response_schema"] = schema
-    return client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(**config),
-    )
+def _system_supported():
+    global _SYSTEM_SUPPORTED
+    if _SYSTEM_SUPPORTED is None:
+        try:
+            out = tokenizer.apply_chat_template(
+                [{"role": "system", "content": "SYSMARKER"}, {"role": "user", "content": "u"}],
+                tokenize=False)
+            _SYSTEM_SUPPORTED = "SYSMARKER" in out
+        except Exception:
+            _SYSTEM_SUPPORTED = False
+        print(f"[ask_sealion] chat template supports system role: {_SYSTEM_SUPPORTED}")
+    return _SYSTEM_SUPPORTED
 
+def _normalize(messages):
+    system = messages[0]["content"] if messages and messages[0]["role"] == "system" else None
+    turns = [m for m in messages if m["role"] != "system" and m["content"].strip()]
+    if not turns or turns[0]["role"] != "user":
+        turns.insert(0, {"role": "user", "content": "(The student selected part of the text and asked for help.)"})
+    merged = []
+    for m in turns:
+        if merged and merged[-1]["role"] == m["role"]:
+            merged[-1]["content"] += "\n\n" + m["content"]
+        else:
+            merged.append(dict(m))
+    if system is None:
+        return merged
+    if _system_supported():
+        return [{"role": "system", "content": system}] + merged
+    merged[0]["content"] = system + "\n\n---\n\n" + merged[0]["content"]
+    return merged
+
+def ask_sealion(system_rules: str, prompt: str, history: Optional[List["Turn"]] = None, *,
+              temperature: float, max_tokens: int, use_adapter: bool = True) -> str:
+    
+    messages = [{"role": "system", "content": system_rules}]
+    for turn in history or []:
+        messages.append({"role": "assistant" if turn.role == "coach" else "user", "content": turn.text})
+    messages.append({"role": "user", "content": prompt})
+ 
+    formatted_prompt = tokenizer.apply_chat_template(
+        _normalize(messages), tokenize=False, add_generation_prompt=True)
+ 
+    inputs = tokenizer(formatted_prompt, return_tensors="pt", add_special_tokens=False).to(model.device)
+ 
+    stop_ids = [tokenizer.eos_token_id]
+    end_of_turn = tokenizer.convert_tokens_to_ids("<end_of_turn>")
+    if end_of_turn is not None and end_of_turn != tokenizer.unk_token_id:
+        stop_ids.append(end_of_turn)
+ 
+    do_sample = temperature > 0.0
+    adapter_off = (not use_adapter) and hasattr(model, "disable_adapter")
+    ctx = model.disable_adapter() if adapter_off else contextlib.nullcontext()
+    # One generation at a time. FastAPI runs these endpoints in a thread pool, so two
+    # students at once would otherwise generate in parallel on one 8 GB GPU, and one
+    # request's disable_adapter() would switch the adapter off under the other.
+    with _GEN_LOCK, ctx, torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature if do_sample else None,
+            do_sample=do_sample,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=stop_ids,
+        )
+    generated_ids = outputs[0][inputs["input_ids"].shape[-1]:]
+    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+ 
 
 # =====================================================================
 # 1) HINTS  (POST /partner)
 # =====================================================================
 class Turn(BaseModel):
-    role: str   # "student" or "coach"
+    role: str                      # "student" or "coach"
     text: str
-
+    mode: Optional[str] = None 
 
 class Ask(BaseModel):
-    mode: str = "debug"            # "debug" (first hint), "followup", or "stuck"
-    problem: Optional[str] = None  # "vocab", "lost", "connect", or "why"
-    passage: str = ""              # the words the student selected
-    paragraph: str = ""            # the paragraph around it
-    goal: Optional[str] = None     # the student's reading goal
-    message: Optional[str] = None  # the student's latest reply
-    history: List[Turn] = []       # the conversation so far about this spot
+    mode: str = "debug"            # from the widget: "debug", "followup", "stuck" (button) or "explain";
+                                   # "giveup" is accepted but the backend decides that itself (should_give_up)
+    problem: Optional[str] = None  # "vocab", "lost", "connect", "why", or "other" (typed by the student)
+    problem_text: Optional[str] = None  # the student's own description, set when problem == "other"
+    passage: str = ""              # words selected
+    paragraph: str = ""            # paragraph around it
+    full_text: str = ""            # the whole reading; the grounding rules check against this
+    goal: Optional[str] = None     # reading goal
+    goal_hint: Optional[str] = None  # a word shared by the selection and the goal (widget's keyword check)
+    message: Optional[str] = None  # student latest reply
+    history: List[Turn] = []       # conversation history
+    response_language: Optional[str] = None  # saved Coach language setting: "en", "fil", or None to auto-detect
 
+COACH_RULES = """You are a warm, encouraging reading coach for Grade 7 students. 
 
-# The coach's personality and rules. Improving this text is the fastest way
-# to improve the hints.
-COACH_RULES = """You are a warm, sharp reading coach talking with one student about one confusing spot in a text.
-Your job is to help them notice HOW they are reading, not to read the text for them.
+Each request contains an "Instruction for this turn". The backend has already decided what kind of turn this is. Follow that instruction exactly, even if it means not asking a question.
 
-Always:
-- Never give the full answer, and never paraphrase the whole passage for them.
-- Use ONE move per reply: a guiding question, a strategy to try, a clue to look for, or one tiny first step.
-- Use the student's actual words from the passage, so your reply could not be pasted onto a different sentence.
-- Plain, friendly words. Under 60 words. No more than two questions.
-- Do not start two replies the same way. Look at what the coach already said in the conversation and do something different.
+General Rules:
+- OUTPUT ONLY YOUR SPOKEN RESPONSE AS THE COACH. Do NOT write "Coach:", "Student:", or simulate any dialogue back-other.
+- Reply ONLY in the language named in the request.
+- Keep your response under 45 words.
+- Never use stock praise like "Good job."
+- Never invent facts, characters, or plot points outside of the provided context.
+- Never ask the student to say something "in your own words" or to repeat an explanation back to you.
+- Never use analogies, metaphors, comparisons or examples from outside the text (no "it's like when you...", no "imagine...", no "have you ever..."). Talk only about what the text says.
+- Use plain, easy-to-understand words."""
 
-Praise rules:
-- NEVER say "Good attempt", "Great question", "Good job", "Great start", "Nice try" or similar stock praise.
-- Do not praise or thank the student for clicking a button or asking for help.
-- Only comment on the student's work if they actually wrote an explanation, and then react to the SPECIFIC thing they said
-  (what is right, or what is missing), not with general praise.
-"""
+CLASSIFIER_RULES = """You are an intent classifier for a reading coach. You get the target word/passage, the coach's last message, and the student's reply.
 
-MODE_TEXT = {
-    "debug": ("This is the FIRST message. The student has not written anything yet, so do not praise or thank them. "
-              "Go straight to your one move."),
-    "followup": ("The student just replied. Read what they wrote. If it is basically right, confirm it in a few words "
-                 "and invite them to mark it clear. If it is partly right, name the part that works and ask about the "
-                 "missing piece. If it is off, or they say 'idk', do not tell them they are wrong; shrink the task into "
-                 "one smaller question."),
-    "stuck": ("The student tried and is STILL stuck. Break the passage into two tiny steps they can do. You may explain "
-              "the meaning of a hard word, but still do not give the full answer."),
+Classify the student's reply into EXACTLY one of these three words:
+- "success": The student shows they understand the target (gives a correct meaning, a correct translation such as a Filipino synonym, or correctly confirms a correct explanation).
+- "stuck": The student gives up, says they don't know, asks to be told directly, or is completely lost.
+- "followup": Anything else: a wrong or partial answer, another question, or continuing the conversation.
+ 
+Output ONLY the exact category word. No punctuation, no explanation."""
+
+_EN_REQUEST = re.compile(r"\b(in english|english please|english po|sa english|sa ingles|ingles po)\b", re.I)
+_FIL_REQUEST = re.compile(r"\b(in tagalog|in filipino|tagalog please|filipino please|sa tagalog|sa filipino|tagalog po)\b", re.I)
+_FIL_HINT = re.compile(r"\b(ang|ng|mga|sa|ay|na|hindi|ko|po|ito|siya|nila|kami|tayo|ba)\b", re.I)
+
+# Words that may surround a language request without making the message an actual answer.
+_REQUEST_FILLER = {
+    "please", "pls", "plz", "po", "naman", "lang", "paki", "pwede", "puwede", "can", "could", "you",
+    "speak", "talk", "reply", "answer", "explain", "say", "use", "in", "sa", "only", "again", "ulit",
+    "instead", "the", "language", "it", "that", "mag", "ka", "mo", "ba", "gusto", "ko", "sana", "ako",
 }
 
-# (what is going wrong, ideas the coach may choose ONE of)
-PROBLEMS = {
-    "vocab": ("The student does not know a word or phrase.",
-              "use clues from nearby sentences; skip the word and reread; swap in a simpler word that fits; look at word parts"),
-    "lost": ("The student read it but lost the main point.",
-             "say it back in ten words; ask who did what; cover it and retell it; split a long sentence at the commas"),
-    "connect": ("The student cannot see how this connects to the sentences before it.",
-                "compare with the sentence before; guess the link word (because, but, so, then); ask what changed between the two"),
-    "why": ("The student cannot tell why something happened; it is implied, not stated.",
-            "separate what the text says from what the student guesses; hunt for an earlier clue; predict, then check"),
+def language_request(text):
+    if not text:
+        return None
+    for lang, pattern in (("en", _EN_REQUEST), ("fil", _FIL_REQUEST)):
+        if pattern.search(text):
+            rest = pattern.sub(" ", text)
+            if all(w in _REQUEST_FILLER for w in re.findall(r"[a-z']+", rest.lower())):
+                return lang
+            return None
+    return None
+
+_LANG_ALIASES = {
+    "en": "en", "eng": "en", "english": "en", "en-us": "en", "en-ph": "en",
+    "fil": "fil", "filipino": "fil", "tagalog": "fil", "tl": "fil", "fil-ph": "fil", "tl-ph": "fil",
 }
 
+def normalize_language(value):
+    if not value:
+        return None
+    return _LANG_ALIASES.get(str(value).strip().lower())
 
-def build_hint_prompt(ask: Ask) -> str:
-    what, ideas = PROBLEMS.get(ask.problem or "", ("The student is confused.", "any helpful reading strategy"))
+def pick_language(ask):
+    texts = [t.text for t in ask.history if t.role == "student"] + [ask.message or ""]
+    for text in reversed(texts):
+        lang = language_request(text)
+        if lang:
+            return lang
+    # 2. The saved setting from the Coach language control.
+    saved = normalize_language(ask.response_language)
+    if saved:
+        return saved
+    # 3. Fallback: detect from the passage.
+    sample = f"{ask.passage} {ask.paragraph}"
+    return "fil" if len(_FIL_HINT.findall(sample)) >= 2 else "en"
+
+def stuck_level(ask):
+    earlier = sum(1 for t in ask.history if t.role == "coach" and t.mode == "stuck")
+    return earlier + 1
+
+_PROMPT_LEAK = re.compile(
+    r"(<start_of_turn>|<end_of_turn>|^\s*(user|model|assistant)\s*$|Context paragraph:|"
+    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal( \(the student's own words\))?:|"
+    r"Key sentences from the text)",
+    re.I | re.M,
+)
+ 
+def clean_reply(text):
+    m = _PROMPT_LEAK.search(text)
+    if m:
+        text = text[:m.start()]
+    text = re.sub(r'^(Coach|Assistant|AI|Reading Partner)\s*:\s*', '', text.strip(), flags=re.IGNORECASE)
+    return text.strip()
+ 
+def last_coach_line(ask):
+    for t in reversed(ask.history):
+        if t.role == "coach":
+            return t.text
+    return ""
+ 
+def classify_intent(message, target_passage="", last_coach=""):
+    if not message:
+        return "followup"
+    prompt = (f"Target word/passage: \"{target_passage}\"\n"
+              f"Coach's last message: \"{last_coach[:300]}\"\n"
+              f"Student reply: \"{message[:300]}\"\nCategory:")
+    
+    raw_output = ask_sealion(CLASSIFIER_RULES, prompt, history=None, temperature=0.1, max_tokens=5, use_adapter=False)
+    cleaned = raw_output.strip().lower()
+
+    if "success" in cleaned:
+        return "success"
+    if "stuck" in cleaned:
+        return "stuck"
+    return "followup"
+
+_QUESTION_BY_PROBLEM = {
+    "vocab":   "ONE simple question to help them figure out what \"{p}\" means using the words around it in the text.",
+    "lost":    "ONE simple question about what is happening here.",
+    "connect": "ONE simple question pointing back to the sentence right before it.",
+    "why":     "ONE simple question to look for an earlier clue in the text.",
+}
+
+def _full_explanation(p):
+    return (f"The student has been stuck several times. Now explain \"{p}\" clearly and simply using "
+            f"the context only, with no analogy or outside example. Do NOT ask them to repeat or restate it. End with "
+            f"one short, friendly line inviting them to keep reading.")
+
+def _re_explanation(p, before):
+    return (f"You already explained \"{p}\" like this: \"{before[:300]}\". The student is still confused, so "
+            f"explain it again in a DIFFERENT way: do NOT reuse those sentences. Use shorter sentences and "
+            f"simpler words, and quote the exact words from the text that show it. Use the context only, with "
+            f"no analogy or outside example. Do NOT ask them to repeat or restate it. End with one short, "
+            f"friendly line inviting them to keep reading.")
+
+def earlier_explanations(ask):
+    return [t.text for t in ask.history if t.role == "coach" and t.mode == "giveup"]
+
+def repeats_earlier(reply, earlier):
+    # Near-copies count too: most of the words the same as an earlier explanation.
+    words = set(gr._words(reply))
+    for e in earlier:
+        old = set(gr._words(e))
+        if words and old and len(words & old) / len(words | old) >= 0.7:
+            return True
+    return False
+
+_RE_EXPLAIN_FALLBACK = {
+    "en": "Let's look at the exact words in the text again: \"{quote}\" Read that sentence slowly. "
+          "Keep reading, and highlight anything else that's confusing.",
+    "fil": "Balikan natin ang eksaktong salita sa teksto: \"{quote}\" Basahin mo ito nang dahan-dahan. "
+           "Magpatuloy sa pagbasa, at i-highlight ang anumang nakalilito pa.",
+}
+
+def re_explain_fallback(ask, lang, g):
+    # Built from the text itself, quoting a sentence not quoted before, so it doesn't repeat either.
+    sents = gr.split_sentences(ask.paragraph or "")
+    ids = gr.selection_ids(sents, ask.passage or "")
+    picks = list(g.evidence if g is not None else []) + [sents[i - 1] for i in ids] + sents
+    replies = [_RE_EXPLAIN_FALLBACK[lang].format(quote=gr._short_quote(s, 20)) for s in picks]
+    said = {t.text for t in ask.history if t.role == "coach"}
+    fresh = [r for r in replies if r not in said]
+    if fresh:
+        return fresh[0]
+    return replies[0] if replies else _KEEP_READING[lang]
+
+def goal_instruction(ask):
+    if not ask.goal or ask.mode in ("repeat", "stuck"):
+        return ""
+    if ask.mode == "success":
+        return (" Then add ONE short sentence on how understanding this helps with their reading goal, "
+                "if it does.")
+    if ask.goal_hint:
+        return (f" This part is related to their reading goal (it mentions \"{ask.goal_hint}\"), so "
+                f"connect your question to that goal.")
+    return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
+            "otherwise do not mention the goal.")
+
+def problem_said(ask):
+    if ask.problem == "other" and ask.problem_text and ask.problem_text.strip():
+        return ask.problem_text.strip()[:200]
+    return None
+
+def mode_instruction(ask):
+    p = ask.passage or "this part"
+    said = problem_said(ask)
+    if said:
+        question = (f"ONE short, simple question aimed at exactly the trouble they described "
+                    f"(\"{said}\"), not at some other difficulty you notice in the passage.")
+    else:
+        question = _QUESTION_BY_PROBLEM.get(ask.problem or "lost", "ONE simple guiding question.").format(p=p)
+    text = _mode_instruction(ask, p, question)
+    if said and ask.mode in ("stuck", "giveup"):
+        text += f" They had described the trouble as: \"{said}\"."
+    return text + goal_instruction(ask)
+
+def _mode_instruction(ask, p, question):
+    if ask.mode == "success":
+        return (f"The student has understood \"{p}\". Confirm they are right, "
+                f"restate the meaning in ONE short sentence using the context, and tell them they "
+                f"are ready to move on to more passages. Do NOT ask any question.")
+    if ask.mode == "stuck":
+        level = stuck_level(ask)
+        if level == 1:
+            return (f"The student is stuck. Do NOT give the answer or explain \"{p}\". Point them to the "
+                    f"exact sentence in the context that holds the clue (quote a few words from it), "
+                    f"then ask ONE easier question, such as a yes/no or either/or question.")
+        if level == 2:
+            return (f"The student is still stuck. Do NOT give the full answer. Explain ONE piece of the "
+                    f"idea behind \"{p}\" using the context, then ask the student to finish the idea.")
+        return _full_explanation(p)
+    if ask.mode == "giveup":
+        before = earlier_explanations(ask)
+        if before:
+            return _re_explanation(p, before[-1])
+        return _full_explanation(p)
+    if ask.mode == "explain":
+        return (f"Explain \"{p}\" in 2 to 4 short sentences at a Grade 7 level, using only the context and "
+                f"key sentences given. If the text doesn't say something, say \"the text doesn't say\". Do NOT "
+                f"ask them to repeat or restate it; end with one short line inviting them to keep reading.")
+    if ask.mode == "repeat":
+        return "The student asked you to change language. Repeat your last question in that language. Nothing else."
+    if ask.mode == "followup":
+        return (f"Respond briefly to what the student just said (don't say whether it's right yet), "
+                f"then ask {question}")
+    return f"Ask the student {question}"
+ 
+def explaining(ask):
+    return ask.mode in ("explain", "giveup") or (ask.mode == "stuck" and stuck_level(ask) >= 3)
+
+def build_hint_prompt(ask, lang, g=None, retry_note=""):
+    passage = ask.passage or "this part"
     lines = []
     if ask.goal:
-        lines.append(f"The student's reading goal: {ask.goal}")
+        lines.append(f"Reading goal (the student's own words): \"{ask.goal[:200]}\"")
     if ask.paragraph:
-        lines.append(f"The paragraph: {ask.paragraph[:2000]}")
-    lines.append(f"The part the student is confused by: {ask.passage[:600]}")
-    lines.append(f"What is going wrong: {what}")
-    lines.append(f"Ideas you may pick ONE from (vary them): {ideas}")
-
-    if ask.history:
-        lines.append("\nConversation so far:")
-        for turn in ask.history[-8:]:
-            who = "Student" if turn.role == "student" else "Coach"
-            lines.append(f"{who}: {turn.text[:600]}")
+        lines.append(f"Context paragraph: {ask.paragraph[:600]}")
+    else:
+        lines.append(f"Context: None provided. Treat '{passage}' as a general vocabulary term "
+                     f"without inventing external characters or plot points.")
+    if g is not None and g.evidence:
+        lines.append("Key sentences from the text (quote only these, word for word; the student cannot see this "
+                     "list, so say \"the text\", never \"the key sentence\"):\n"
+                     + "\n".join(f"- {s}" for s in g.evidence))
+    lines.append(f"The student is working on: \"{passage}\".")
     if ask.message:
-        lines.append(f"\nThe student's latest message: {ask.message[:600]}")
-
-    lines.append("\n" + MODE_TEXT.get(ask.mode, MODE_TEXT["debug"]))
-    lines.append("Write only what the coach says next.")
+        lines.append(f"Student's latest reply: \"{ask.message[:300]}\"")
+    lines.append(f"Language for your reply: {'English' if lang == 'en' else 'Filipino (natural Taglish is OK)'}")
+    instruction = mode_instruction(ask)
+    branch = gr.branch_instruction(g, explaining(ask)) if g is not None else ""
+    lines.append(f"\nInstruction for this turn: {instruction}" + (f" {branch}" if branch else ""))
+    if retry_note:
+        lines.append(retry_note)
+    lines.append("\nOutput ONLY your single spoken response as the coach.")
     return "\n".join(lines)
 
+SUCCESS_FALLBACK = {
+    "en":  "That's right! You've figured out what \"{p}\" means. You're ready to move on to more passages.",
+    "fil": "Tama! Nakuha mo na ang ibig sabihin ng \"{p}\". Handa ka nang magpatuloy sa susunod na babasahin.",
+}
 
-def generate_hint(ask: Ask) -> str:
-    response = ask_gemini(COACH_RULES, build_hint_prompt(ask), temperature=0.9, max_tokens=800)
-    text = (response.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned an empty reply.")
-    return text
+# ---- Grounding rules (Backend/grounding.py). GROUNDING_RULES=0 turns R1-R5 off for comparison runs.
+def grounding_on():
+    return os.getenv("GROUNDING_RULES", "1") != "0"
+
+def rules_passage(ask):
+    # The whole reading when the widget sends it; older widgets only send the paragraph.
+    return (ask.full_text or ask.paragraph or "")[:20000]
+
+def student_question(ask):
+    if ask.message:
+        return ask.message
+    return (problem_said(ask) or "") if ask.mode == "debug" else ""
+
+def run_grounding(ask):
+    """R0-R3 for this turn, or None when the rules are off or the turn needs none."""
+    # "success" is checked too: the classifier can call a wrong answer a success.
+    if not grounding_on() or ask.mode == "repeat":
+        return None
+    earlier = [problem_said(ask) or ""] + [t.text for t in ask.history if t.role == "student"]
+    g = gr.ground(ask_sealion, question=student_question(ask), passage=rules_passage(ask),
+                  selection=ask.passage, problem=ask.problem, mode=ask.mode,
+                  full_passage=bool(ask.full_text), earlier=earlier,
+                  coach_line=last_coach_line(ask), claim_check=True)
+    print(g.log_line())
+    for note in g.notes:
+        print(f"    {note}")
+    return g
+
+_GROUNDING_RETRY = ("\nImportant: use only names, numbers and quotes that appear in the text, copied word for "
+                    "word, and do not change the spelling of any word from the text.")
+_HEDGE_RETRY = (" Make clear this is a clue, not something the text says directly (use words like \"might\" "
+                "or \"seems\").")
+_REPEAT_RETRY = ("\nImportant: your last answer repeated your earlier explanation almost word for word. Write a "
+                 "new explanation with different sentences.")
+_AGREED_RETRY =" The text says something different from what the student said, so do NOT start by agreeing."
+_NOTHING_RETRY = (" The student did not actually answer, so do NOT tell them they are right. "
+                  "Point them back to the text and ask again.")
+_OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your answer must be about \"{p}\". "
+                     "Do not explain any other word or name from that sentence.")
+_QUESTION_RETRY = (" End with ONE question for the student. Do NOT state the answer or explain it "
+                   "outright: your job this turn is to help them work it out.")
+_LANG_RETRY = {"en": " Write your whole reply in English.",
+               "fil": " Isulat ang buong sagot mo sa Filipino."}
+_REPEAT_ANY_RETRY = ("\nImportant: you already said something very close to this earlier in this "
+                     "conversation. Say something different, about a different part of the text.")
+
+
+def style_note(problems, lang="en"):
+    """The retry wording for R8, R9 and R10."""
+    note = ""
+    if "R8:no_question" in problems:
+        note += _QUESTION_RETRY
+    if "R9:wrong_language" in problems:
+        note += _LANG_RETRY.get(lang, _LANG_RETRY["en"])
+    if "R10:repeats" in problems:
+        note += _REPEAT_ANY_RETRY
+    return note
+_NOT_STATED_RETRY = (" Start by saying plainly that the text doesn't say this (in Filipino: \"Hindi sinabi ng "
+                     "teksto...\").")
+
+def wants_question(ask):
+    """Turns whose job is to ask rather than tell. Explaining turns and a
+    confirmed success are meant to have no question, so they are left out."""
+    return not explaining(ask) and ask.mode not in ("success", "repeat")
+
+
+def style_problems(ask, reply):
+    """R8, R9 and R10. These judge the reply as a coaching turn, not against
+    the passage, so they run even when the passage rules are switched off."""
+    problems = []
+    if wants_question(ask) and not gr.asks_question(reply):
+        problems.append("R8:no_question")
+    if gr.wrong_language(reply, pick_language(ask)):
+        problems.append("R9:wrong_language")
+    earlier_coach = [t.text for t in ask.history if t.role == "coach" and t.text]
+    if gr.repeats_any(reply, earlier_coach):
+        problems.append("R10:repeats")
+    return problems
+
+
+def reply_problems(ask, reply, g):
+    """R5 for every reply, plus R4 for INFERABLE ones and the "say it's not stated" check for NOT_STATED."""
+    problems = gr.check_reply(reply, rules_passage(ask), ask.message or "", ask.history, ask.passage)
+    if g is not None and g.label == gr.INFERABLE and not gr.is_meaning(g) and not gr.is_hedged(reply):
+        problems.append("R4:unhedged")
+    if g is not None and g.label == gr.NOT_STATED and not gr.says_not_stated(reply):
+        problems.append("NOT_STATED:not_said")
+    if g is not None and g.label == gr.CONTRADICTED and gr.agrees(reply):
+        problems.append("R6:agreed")
+    # Saying "Tama" to something that was not an answer at all. The student
+    # asked a question back, or said "ok", and the coach confirmed it as
+    # correct, which is how a wrong answer gets marked right.
+    if g is not None and g.claim == "NO_CLAIM" and gr.agrees(reply):
+        problems.append("R6:agreed_nothing")
+    # R11. On a turn whose job is the selected words themselves, a reply that
+    # drops them and explains a neighbouring name instead is off target.
+    if on_the_selection(ask):
+        problems += ["R11:" + p for p in gr.off_target(reply, ask.passage, rules_passage(ask))]
+    return problems
+
+
+def on_the_selection(ask):
+    """Turns that are about the selected words, not the passage around them: a
+    vocabulary question, and any turn that has to explain the selection outright."""
+    if ask.problem in ("vocab", "word"):
+        return True
+    return explaining(ask) or ask.mode == "success"
+
+# "Say it in your own words" reads as a test and confuses students; the adapter sometimes adds it anyway.
+_RESTATE_REQUEST = re.compile(
+    r"[^.?!]*\b(own words|sariling (mga )?(salita|pananalita)|restate|say it back|explain it back"
+    r"|read (that|it|the sentence|this)[^.?!]* (out loud|aloud)"
+    # Filipino: basahin mo / pakibasa / bigkasin, with or without "mo", any
+    # wording in between, ending in malakas. "Pakibasa nang malakas" was slipping through.
+    r"|(basahin|pakibasa|bigkasin|bumasa)( mo)?[^.?!]*\b(nang |ng )?malakas"
+    r"|repeat (that|it|after me)|ulitin mo)\b[^.?!]*[.?!]?\s*",
+    re.I)
+
+# "The key sentence says..." refers to a list in the prompt that the student never sees.
+_KEY_SENTENCE = re.compile(r"\b(the\s+)?(first|second|third|last|other\s+)?\s*key\s+sentences?\b", re.I)
+
+def name_the_text(reply):
+    def fix(m):
+        return "The text" if m.group(0)[0].isupper() else "the text"
+    return _KEY_SENTENCE.sub(fix, reply)
+
+def drop_restate_requests(reply):
+    trimmed = _RESTATE_REQUEST.sub("", reply).strip()
+    return trimmed or reply
+
+# Analogies and outside examples ("it's like when you carry your lunchbox") confuse students more
+# than they help, and the adapter adds them even when told not to.
+_ANALOGY = re.compile(
+    r"\b(like when|like how|just like|kind of like|sort of like|imagine|think of it|have you ever|"
+    r"for example|for instance|similar to|the same way|parang (kapag|kung|noong|ikaw|tayo)|"
+    r"katulad (ng|nang) kapag|tulad (ng|nang) kapag|halimbawa|isipin mo|naranasan mo na)\b"
+    r"|^\W*(like|parang)\b", re.I)
+
+def _without_analogy(sentence):
+    m = _ANALOGY.search(sentence)
+    if not m:
+        return sentence
+    # "Mandy held the eggs, like when you carry your lunchbox." keeps "Mandy held the eggs."
+    head = re.split(r"\s*[,;—–-]\s*(?:\w+\s+){0,2}$", sentence[:m.start()])[0].rstrip(" ,;—–-")
+    if head != sentence[:m.start()].rstrip() and len(head.split()) >= 3:
+        return head + "."
+    return ""
+
+def drop_analogies(reply):
+    sents = gr.split_sentences(reply)
+    kept = [k for k in (_without_analogy(s) for s in sents) if k]
+    if kept == sents:
+        return reply
+    print(f"[rules] removed analogies: {reply!r} -> {kept}")
+    return " ".join(kept)
+
+_KEEP_READING = {"en": "Keep reading, and highlight anything else that's confusing.",
+                 "fil": "Magpatuloy sa pagbasa, at i-highlight ang anumang nakalilito pa."}
+
+def drop_trailing_questions(reply, lang):
+    # A full explanation that ends on a new question restarts the hint ladder it was meant to end.
+    sents = gr.split_sentences(reply)
+    kept = list(sents)
+    while kept and kept[-1].rstrip().endswith("?"):
+        kept.pop()
+    if not kept or len(kept) == len(sents):
+        return reply
+    return " ".join(kept + [_KEEP_READING[lang]])
+
+def _generate_reply(ask, prompt, lang, temperature):
+    # Explain mode states the answer, which the Socratic adapter is trained not to do.
+    raw_response = ask_sealion(COACH_RULES, prompt, history=ask.history, temperature=temperature,
+                               max_tokens=150, use_adapter=ask.mode != "explain")
+    reply = name_the_text(drop_analogies(drop_restate_requests(clean_reply(raw_response))))
+    if explaining(ask):
+        reply = drop_trailing_questions(reply, lang)
+
+    if ask.mode == "success" and "?" in reply:
+        reply = SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part")
+    if not reply:
+        reply = ("Let's look at that part of the text again. What do you notice?" if lang == "en"
+                 else "Balikan natin ang bahaging iyon ng teksto. Ano ang napapansin mo?")
+    return reply
+
+_CLOSING = re.compile(r"\b(keep (reading|going)|highlight|magpatuloy|try the next sentence)\b", re.I)
+
+def usable(ask, kept):
+    """What's left after R7 still does the turn's job: something besides a closing line, and for a
+    hint, a question (a hint whose only question was off-text has nothing to ask)."""
+    sents = [s for s in gr.split_sentences(kept) if not _CLOSING.search(s)]
+    # At least one line has to be about the text ("That's a lot for one person!" alone explains nothing).
+    passage = gr.split_sentences(rules_passage(ask))
+    if not any(gr._term_in(t, p) for s in sents for t in gr.key_terms(s) for p in passage):
+        return False
+    return ask.mode == "success" or explaining(ask) or any(s.rstrip().endswith("?") for s in sents)
+
+def fact_checked(ask, reply):
+    """R7, then the explanation's no-trailing-question rule again (removing a line can leave one last)."""
+    kept, invented = remove_invented(ask, reply)
+    if explaining(ask):
+        kept = drop_trailing_questions(kept, pick_language(ask))
+    return kept, invented
+
+def remove_invented(ask, reply):
+    """R7: drop the reply's statements about the story that the text doesn't back, and word the
+    guesses it gives clues for as guesses."""
+    invented, note, unhedged = gr.check_facts(ask_sealion, reply, gr.split_sentences(rules_passage(ask)),
+                                              ask.passage, student=ask.message or "")
+    print(f"[grounding] {note}")
+    if not invented and not unhedged:
+        return reply, []
+    if invented:
+        print(f"[grounding] removed invented details: {invented}")
+    if unhedged:
+        print(f"[grounding] worded as guesses: {unhedged}")
+    return gr.apply_fact_check(reply, invented, unhedged, pick_language(ask)), invented
+
+def generate_hint(ask, g=None):
+    lang = pick_language(ask)
+    reply, template = _checked_reply(ask, g, lang)
+    # FACT_CHECK=0 skips R7 (one extra model call per reply) while keeping the other rules.
+    if template or not grounding_on() or not rules_passage(ask) or os.getenv("FACT_CHECK", "1") == "0":
+        return reply
+    kept, invented = fact_checked(ask, reply)
+    if not invented:
+        return kept          # unchanged, or with its guesses now worded as guesses
+    if usable(ask, kept):
+        return kept
+    # Nothing but a closing line is left: try once more, told what not to say.
+    note = ("\nImportant: the text does NOT say or mention these things, so do not say or ask them: "
+            + " ".join(f"\"{s}\"" for s in invented) + " Only say and ask about what the key sentences and the "
+            "context paragraph say.")
+    print("[grounding] not enough left after removing invented details -> regenerating once")
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang, 0.3)
+    if not reply_problems(ask, reply, g):
+        kept, invented = fact_checked(ask, reply)
+        if usable(ask, kept):
+            return kept
+    print("[grounding] still invented -> fallback template")
+    if ask.mode == "success":
+        return SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part")
+    if explaining(ask):
+        return re_explain_fallback(ask, lang, g)
+    return gr.fallback_reply(g or gr.GroundingResult(), lang)
+
+def _checked_reply(ask, g, lang):
+    """The reply after R4-R6 and the repeat check, and whether it is a code-built template."""
+    temperature = 0.3 if ask.mode in ("success", "repeat") else 0.7
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g), lang, temperature)
+    before = earlier_explanations(ask) if ask.mode == "giveup" else []
+    if before and repeats_earlier(reply, before):
+        print(f"[rules] explanation repeats an earlier one -> regenerating once: {reply!r}")
+        reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=_REPEAT_RETRY), lang, 0.9)
+        if repeats_earlier(reply, before):
+            print(f"[rules] still repeating -> text-based fallback: {reply!r}")
+            return re_explain_fallback(ask, lang, g), True
+    style = style_problems(ask, reply)
+    if not grounding_on() or not rules_passage(ask):
+        if not style:
+            return reply, False
+        print(f"[rules] reply failed {style} -> regenerating once: {reply!r}")
+        reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=style_note(style, lang)), lang, 0.3)
+        if style_problems(ask, reply):
+            print(f"[rules] still failing -> fallback template: {reply!r}")
+            return gr.fallback_reply(g or gr.GroundingResult(), lang), True
+        return reply, False
+
+    problems = reply_problems(ask, reply, g) + style
+    if not problems:
+        return reply, False
+    bad_quotes = [p[len("quote:"):] for p in problems if p.startswith("quote:")]
+    if bad_quotes and len(bad_quotes) == len(problems):
+        # Only the quotation marks are wrong (the words aren't the text's). Removing them keeps a
+        # reply that may be fine; regenerating risks a worse one. R7 still checks what it says.
+        fixed = gr.unquote(reply, bad_quotes)
+        if not reply_problems(ask, fixed, g):
+            print(f"[grounding] quotes not from the text -> removed the quotation marks: {reply!r}")
+            return fixed, False
+    print(f"[grounding] reply failed {problems} -> regenerating once: {reply!r}")
+    note = (_GROUNDING_RETRY + (_HEDGE_RETRY if "R4:unhedged" in problems else "")
+            + (_NOT_STATED_RETRY if "NOT_STATED:not_said" in problems else "")
+            + (_AGREED_RETRY if "R6:agreed" in problems else "")
+            + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
+            + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
+               if any(p.startswith("R11:") for p in problems) else "")
+            + style_note(problems, lang))
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang,
+                            0.3 if temperature > 0.3 else 0.0)
+    problems = reply_problems(ask, reply, g) + style_problems(ask, reply)
+    if [p for p in problems if p != "R4:unhedged"]:
+        print(f"[grounding] still failing {problems} -> fallback template: {reply!r}")
+        if ask.mode == "success":
+            return SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part"), True
+        return gr.fallback_reply(g or gr.GroundingResult(), lang), True
+    if problems:
+        print("[grounding] still unhedged -> adding the INFERABLE hedge")
+        return gr.TEMPLATES[lang]["hedge"] + reply, False
+    return reply, False
 
 
 # =====================================================================
@@ -165,66 +847,834 @@ def generate_hint(ask: Ask) -> str:
 class QuizAsk(BaseModel):
     text: str
     goal: Optional[str] = None
-    n: int = 4
+    n: int = 3
+
+QUIZ_RULES = """You write JSON-formatted reading-comprehension multiple choice questions.
+You MUST output valid JSON matching this schema exactly:
+{
+  "questions": [
+    {
+      "kind": "Literal",
+      "q": "Question text here?",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "answer": 0,
+      "why": "Explanation why.",
+      "evidence": "exact quote"
+    }
+  ]
+}
+Keep options balanced and write clear questions based ONLY on the text."""
 
 
-class QuizQuestion(BaseModel):
-    kind: str            # "Literal" or "Inference"
-    q: str
-    options: List[str]
-    answer: int          # 0-based index of the correct option
-    why: str
-    evidence: str        # a short phrase from the text that supports the answer
+# Curly quotes -> straight, one character for one, so positions in the passage are kept.
+_QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'})
+
+def find_evidence(evidence: str, passage: str) -> Optional[str]:
+    """Locate the model's quote in the passage and return the passage's own text for it.
+
+    The same words must appear in the same order, but line breaks, spacing, punctuation
+    between words, curly vs straight quotes and case may differ: models routinely join
+    the lines of a poem with ", " or turn ’ into '. Returns None if the words are not there.
+    """
+    words = re.findall(r"[\w']+", evidence.translate(_QUOTES))
+    if not words:
+        return None
+    pattern = r"(?<![\w'])" + r"[^\w']+".join(re.escape(w) for w in words) + r"(?![\w'])"
+    m = re.search(pattern, passage.translate(_QUOTES), re.IGNORECASE)
+    if not m:
+        return None
+    return " ".join(passage[m.start():m.end()].split())
+
+# mT5 writes the question wording. When it cannot, this writes it instead, so a
+# student is not left with no quiz at all. Kept separate and labelled so the two
+# generators can still be told apart in an evaluation.
+def sealion_questions(passage: str, targets: list) -> list:
+    want = [{"kind": str(t.get("kind", "Literal")).strip() or "Literal",
+             "answer": str(t.get("answer", "")).strip()} for t in targets]
+    prompt = (
+        "Write ONE reading-comprehension question for each answer below. The question must be\n"
+        "answerable from the passage, and its answer must be exactly the given phrase.\n"
+        "Write each question in the same language as the passage. Do not invent facts.\n"
+        "Do not put the answer inside the question.\n\n"
+        f"PASSAGE:\n{passage}\n\n"
+        f"ANSWERS:\n{json.dumps(want, ensure_ascii=False, indent=2)}\n\n"
+        'Return valid JSON only: {"items": [{"kind": "...", "answer": "...", "q": "..."}]}'
+    )
+    try:
+        raw = ask_sealion("Write quiz questions. Return valid JSON only.", prompt,
+                          temperature=0.3, max_tokens=500, use_adapter=False)
+        clean = raw.strip()
+        if "```json" in clean:
+            clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+        items = json.loads(clean).get("items", [])
+    except Exception as e:
+        print("[Quiz] the fallback question writer failed:", repr(e))
+        return []
+
+    out = []
+    for it in items:
+        q = str(it.get("q", "")).strip()
+        a = str(it.get("answer", "")).strip()
+        if not q or not a:
+            continue
+        # The answer still has to be the passage's own words.
+        start = passage.lower().find(a.lower())
+        if start == -1:
+            continue
+        out.append({"kind": str(it.get("kind", "Literal")).strip() or "Literal",
+                    "q": q, "correct_text": passage[start:start + len(a)],
+                    "source": "sealion"})
+    return out
 
 
-class Quiz(BaseModel):
-    questions: List[QuizQuestion]
+def _cmp(text):
+    return re.sub(r"\W+", " ", str(text).casefold()).strip()
+
+def _contains(a, b):
+    """Whole-word containment: '1' is not inside '1524'."""
+    return f" {a} " in f" {b} "
+
+def option_matches_span(option, span):
+    """True if SEA-LION's wording of the correct answer still says what the verified phrase says."""
+    o, s_ = _cmp(option), _cmp(span)
+    if not o or not s_:
+        return False
+    if _contains(s_, o) or _contains(o, s_):
+        return True
+    span_words = set(s_.split())
+    return len(span_words & set(o.split())) / len(span_words) >= 0.5
+
+def clean_distractors(distractors, correct_option, span):
+    """Drop duplicates and any distractor that equals, contains or sits inside the correct
+    answer (or the verified phrase), since those can be correct too."""
+    refs = [r for r in (_cmp(correct_option), _cmp(span)) if r]
+    keep, seen = [], set()
+    for d in distractors:
+        c = _cmp(d)
+        if not c or c in seen:
+            continue
+        if any(_contains(c, r) or _contains(r, c) for r in refs):
+            continue
+        seen.add(c)
+        keep.append(str(d).strip())
+    return keep
+
+# ---- extra question checks -------------------------------------------------------------
+_ANSWER_IS_QUANTITY = re.compile(r"\d")   # digits only: "ninety-one steps" is an ordinary noun phrase
+_QUANTITY_QUESTION = re.compile(
+    r"\bhow (?:many|much|long|far|tall|high|old|big|large|deep|heavy|often|wide)\b"
+    r"|\bwhen\b|\bwhat (?:year|time|age|number|date)\b"
+    r"|\b(?:gaano|ilan|ilang|kailan|magkano|taon|taas|haba|bigat|laki|lalim|bilang|edad|oras|petsa)\b",
+    re.I)
+
+# SAME_SENTENCE_CHECK=0 turns off the "distractor in the answer's sentence" rejection
+# if it throws away too many questions on long-sentenced passages.
+SAME_SENTENCE_CHECK = os.getenv("SAME_SENTENCE_CHECK", "1") != "0"
+
+_NOT_PAST = {"exceed", "proceed", "succeed", "indeed", "hundred", "bleed", "breed", "speed", "agreed"}
+_GARBLED_DO = re.compile(
+    r"\b(?i:did|does|do)\s+(?:(?i:she|he|they|it|i|you|we)|[A-Z][a-z]+)\s+"
+    r"((?i:\w{3,}ed|went|came|took|made|saw|ran|got|gave|began|wrote|found|told|knew|kept|left|felt|"
+    r"brought|taught|was|were))\b")
+
+def question_is_garbled(question):
+    """English only: mT5 sometimes writes 'What did she turned ...?' (did/does/do + a past-tense verb).
+    A pattern check, not a grammar checker: it only catches this one mistake."""
+    m = _GARBLED_DO.search(question)
+    return bool(m) and m.group(1).lower() not in _NOT_PAST
+
+QG_MAX_COPY = int(os.getenv("QG_MAX_COPY", "8"))
+
+def copies_passage(question, passage, run=None):
+    """True if the question repeats `run` or more words in a row straight from the passage
+    (mT5 sometimes glues two clauses of the passage into one 'question')."""
+    run = run or QG_MAX_COPY
+    q, p = _cmp(question).split(), f" {_cmp(passage)} "
+    return any(" " + " ".join(q[i:i + run]) + " " in p for i in range(len(q) - run + 1))
+
+def question_fits_answer(question, answer):
+    """A number or amount answer needs a question that asks for a number or amount
+    ('What is the peak called?' cannot have '2,463 metres' as its answer).
+    Only short answers containing a digit are treated as quantities, so
+    'ninety-one steps' or 'three long flashes and one short' are not forced into a 'how many' question."""
+    a = answer.strip()
+    if len(a.split()) > 3 or not _ANSWER_IS_QUANTITY.search(a):
+        return True
+    return bool(_QUANTITY_QUESTION.search(question))
+
+def sentences_with(passage, span):
+    """The passage sentences that contain the verified answer span."""
+    sentences = re.split(r"(?<=[.!?])\s+", passage)
+    s_ = _cmp(span)
+    return [x for x in sentences if _contains(s_, _cmp(x))]
+
+def distractor_in_answer_sentence(distractors, passage, span):
+    """First distractor that is also written in the same sentence as the answer, or None.
+    The passage then says it too, so it can be defensible (Albay and Bicol in one sentence)."""
+    sents = sentences_with(passage, span)
+    for d in distractors:
+        c = _cmp(d)
+        if c and any(_contains(c, _cmp(x)) for x in sents):
+            return d
+    return None
+
+def support_for(item, idx, option_items, total):
+    """SEA-LION's entry for this question, matched by question text rather than by position.
+    Falls back to position only when it returned exactly one entry per question."""
+    key = _cmp(item["q"])
+    for entry in option_items:
+        if isinstance(entry, dict) and _cmp(entry.get("q", "")) == key:
+            return entry
+    if len(option_items) == total and isinstance(option_items[idx], dict):
+        return option_items[idx]
+    return None
 
 
-QUIZ_RULES = """You write reading-comprehension quiz questions for students, using ONLY the text you are given.
-Rules:
-- Write exactly the number of multiple-choice questions you are asked for.
-- Mix the types: about half "Literal" (the answer is stated in the text) and about half "Inference" (the answer must be worked out from clues in the text).
-- Exactly 4 options per question, and only one clearly correct.
-- Wrong options must be believable: common misreadings, details from the text used the wrong way, or things that are true in general but not supported by this text. Never silly or obviously wrong.
-- Keep the correct option about the same length as the others.
-- Do not ask about facts that are not in the text. Never use "all of the above" or "none of the above".
-- "answer" is the 0-based index of the correct option.
-- "why" is one or two simple sentences explaining how the text supports the answer. For inference questions, name the clue. Do not refer to options by letter or number.
-- "evidence" is a short phrase copied exactly from the text that supports the answer.
-- Use clear, simple language.
+def parse_json_response(raw: str) -> dict:
+    clean = raw.strip()
+
+    if "```json" in clean:
+        clean = clean.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in clean:
+        clean = clean.split("```", 1)[1].split("```", 1)[0].strip()
+
+    return json.loads(clean)
+
+
+def repair_json_questions(raw_options):
+    """SEA-LION's JSON with trailing commas dropped and any unclosed string,
+    bracket or brace shut again. Their repair, lifted out of generate_quiz so
+    every chunk can use it."""
+    repaired = re.sub(r",\s*([}\]])", r"\1", raw_options.strip())
+
+    # Close missing JSON structures when the output is truncated.
+    try:
+        options_data = parse_json_response(repaired)
+    except json.JSONDecodeError:
+        repaired = repaired.rstrip()
+
+        stack = []
+        in_string = False
+        escaped = False
+
+        for char in repaired:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif char in "[{":
+                    stack.append("]" if char == "[" else "}")
+                elif char in "]}":
+                    if stack and stack[-1] == char:
+                        stack.pop()
+
+        if in_string:
+            repaired += '"'
+
+        repaired += "".join(reversed(stack))
+
+        options_data = parse_json_response(repaired)
+    return options_data.get("questions", [])
+
+
+def build_options_prompt(passage, chunk, why_language):
+    """The options prompt for one chunk of questions. Lifted out of generate_quiz
+    unchanged so it can be built once per chunk instead of once per quiz."""
+    options_prompt = f"""
+Create {len(chunk)} reading-comprehension multiple-choice questions.
+
+PASSAGE:
+{passage}
+
+QUESTIONS AND CORRECT ANSWERS:
+{json.dumps(chunk, ensure_ascii=False, indent=2)}
+
+RULES:
+
+GENERAL:
+- Use ONLY facts supported by the passage.
+- Keep every supplied question exactly unchanged.
+- Preserve the supplied "kind".
+- Generate exactly 4 answer choices per question.
+- Ensure exactly one option is correct based on the passage.
+- Include the correct answer exactly once.
+- Create 3 plausible but clearly incorrect distractors.
+- Make all 4 choices distinct. Do not repeat ideas or use synonyms.
+- Never use "None of the above" or "All of the above".
+- Set "answer" to the zero-based index of the correct option.
+- Verify that the selected answer index points to the correct option.
+
+ANSWER CHOICES:
+- Write the correct option as a direct answer to the question.
+- Prefer a concise answer of 2–8 words when grammatically appropriate.
+- Do not simply copy a sentence or clause from the passage.
+- Identify what the question is asking before writing the answer.
+- For "How" questions, describe the process or method.
+- For "What helps" questions, identify the thing that provides the help.
+- For "Why" questions, state the reason.
+- For "What causes" questions, identify the cause.
+- Preserve the original meaning of the supplied correct answer.
+- The correct option must answer the question independently.
+- Do not use a passage sentence as an option merely because it contains
+  the correct information.
+- Evidence must remain a separate, exact quote from the passage.
+- The correct option must preserve the meaning of the supplied correct answer.
+- Do not make the correct option unnecessarily long just to match the passage word for word.
+- Rewrite the supplied correct answer into a concise answer of 2–8 words.
+- The correct option must directly answer the question, not reproduce
+  a complete sentence from the passage.
+- Do not copy the correct option verbatim into the evidence field.
+- Evidence must be an exact quote from the passage, preferably a
+  complete supporting clause or sentence.
+- The evidence should provide context that supports the answer.
+- All distractors must relate to the subject of the question and
+  passage, but must be demonstrably incorrect.
+- Do not introduce unrelated concepts that are absent from the passage.
+- Avoid using a fragment from the passage as an answer when a concise,
+  grammatically complete answer can be written.
+- A distractor must not be a broader or narrower version of the correct answer (for example a
+  region, country or category that contains the answer), and must not be something the passage
+  also says is true for this question. Only one option may be a correct answer.
+- Never create two options that express the same action or fact.
+- Distractors must be clearly different from the correct answer.
+- Do not change the subject of an action in a way that makes
+  two options partially correct.
+- Ensure the correct answer index points to the option that
+  best answers the question.
+- Generate exactly 4 DISTINCT answer options for every question.
+- Exactly ONE option must be correct.
+- The other 3 options must be plausible but incorrect based on the passage.
+- NEVER copy the correct answer into multiple options.
+- NEVER repeat an option or use minor wording changes that preserve the same meaning.
+- Keep options concise and directly answer the question.
+- If the supplied correct answer is a long sentence, shorten it while preserving its essential meaning.
+- Make each distractor different from the correct answer and from the other distractors.
+- Before returning the JSON, verify that all 4 options are distinct and only one answers the question correctly.
+- If you cannot create 3 distinct, plausible distractors, reconsider the question and its answer.
+
+QUESTION CHECK:
+- Set "question_ok" to false if the supplied question and correct answer do not fit each other:
+  the question asks for a different kind of thing than the answer (for example it asks for a name
+  but the answer is a number), it reverses who does what to whom, more than one answer
+  would be correct according to the passage, or it is not a natural, grammatical question in the
+  language of the passage. Otherwise set it to true.
+- Never reinterpret or reword the supplied question inside "q" or "why". Report the problem with
+  "question_ok": false instead; "q" itself must always stay unchanged.
+- When "question_ok" is false, write "better_question": one short, natural question in the language of
+  the passage whose only correct answer is exactly the supplied correct answer. Use your own wording
+  (do not copy more than 6 words in a row from the passage). When "question_ok" is true,
+  set "better_question" to an empty string.
+
+WHY:
+- Write the explanation in {why_language}, the language of the passage.
+- The explanation must match the question exactly as written.
+- Use only {why_language} words in the explanation. Do not mix in words from another language
+  (for example no English words such as "offer" in a Filipino explanation).
+- Explain briefly why the correct answer answers the question.
+- Use your own words rather than copying the evidence verbatim.
+- Do not introduce facts that are unsupported by the passage.
+
+EVIDENCE:
+- Evidence MUST be copied exactly from the original PASSAGE.
+- Evidence must be a continuous substring of the original passage.
+- Select the complete sentence or shortest relevant excerpt that
+  directly supports the correct answer.
+- Prefer a complete supporting sentence when it provides useful context.
+- Do not use the correct answer option as the evidence.
+- Do not copy the answer option and merely add punctuation.
+- Do not paraphrase, summarize, or invent evidence.
+- Evidence and answer serve different purposes:
+  - answer: a concise response selected from the four options.
+  - evidence: the original passage text supporting that response.
+- Before returning JSON, verify that every evidence value appears
+  exactly in the original passage and supports its corresponding answer.
+- If no supporting quote can be found, do not invent one.
+
+OUTPUT:
+- Return valid JSON only.
+- Do not include Markdown fences or text outside the JSON.
+- Keep the original question text and kind unchanged.
+
+Required format:
+{{
+  "questions": [
+    {{
+      "kind": "Literal",
+      "q": "Question text unchanged",
+      "question_ok": true,
+      "better_question": "",
+      "correct_option": "Concise correct answer",
+      "distractors": [
+        "Incorrect option A",
+        "Incorrect option B",
+        "Incorrect option C"
+      ],
+      "why": "Brief explanation in your own words",
+      "evidence": "Exact quote from the passage"
+    }}
+  ]
+}}
 """
+    return options_prompt
 
 
 def generate_quiz(ask: QuizAsk) -> list:
-    n = max(2, min(ask.n, 8))
-    lines = [f"Write {n} questions."]
-    if ask.goal:
-        lines.append(f"The student's reading goal was: {ask.goal}. Make at least one question serve that goal if the text allows.")
-    lines.append("\nTEXT:\n" + ask.text[:8000])
-    response = ask_gemini(QUIZ_RULES, "\n".join(lines), temperature=0.5, max_tokens=4000, schema=Quiz)
+    n = max(2, min(ask.n, QUIZ_MAX_QUESTIONS))
+    passage = ask.text.strip()[:4000]
 
-    quiz = response.parsed
-    if not isinstance(quiz, Quiz):
-        quiz = Quiz.model_validate_json(response.text or "{}")
+    if not passage:
+        raise ValueError("The passage cannot be empty.")
+    
+    lang = detect_lang(passage)
+    max_words = MAX_ANSWER_WORDS.get(lang, 8)
+    why_language = "Filipino" if lang == "fil" else "English"
+    _clock = [time.perf_counter(), time.perf_counter()]   # [last lap, start]
 
-    cleaned = []
-    for q in quiz.questions:
-        if len(q.options) != 4 or len(set(q.options)) != 4 or not 0 <= q.answer < 4:
-            continue  # skip badly formed questions
-        correct = q.options[q.answer]
-        options = q.options[:]
-        random.shuffle(options)  # models like to put the right answer in the same spot
-        cleaned.append({
-            "kind": q.kind if q.kind in ("Literal", "Inference") else "Question",
-            "q": q.q,
-            "options": options,
-            "answer": options.index(correct),
-            "why": q.why,
-            "evidence": q.evidence,
+    def lap(label):
+        now = time.perf_counter()
+        print(f"[Quiz][time] {label}: {now - _clock[0]:.1f}s")
+        _clock[0] = now
+    # Ask for a few extra targets: some questions fail the mT5 answer check and are dropped.
+    n_targets = min(n + 3, 8)
+
+
+    # STEP 1: Use SEA-LION to identify answer phrases in the passage.
+    # T5 requires an answer phrase to be highlighted in the context.
+    answer_prompt = f"""
+Read the passage and select exactly {n_targets} DISTINCT answer targets for a
+reading-comprehension quiz.
+
+QUESTION MIX:
+- Select approximately half literal and half inferential targets.
+- Include at least one inferential target whenever the passage supports it.
+
+LITERAL:
+- The answer is directly stated in the passage.
+- The student can find the answer without drawing a conclusion.
+
+INFERENTIAL:
+- The answer requires connecting clues or drawing a reasonable conclusion.
+- Choose targets that support questions about causes, motivations,
+  implications, or lessons.
+- Do not label a directly stated fact as inferential merely to meet the mix.
+
+TARGET SELECTION:
+- Each answer target must be a short phrase of at most {max_words} words (a name,
+  date, number, place, term or short noun phrase), never a full sentence.
+- Copy each answer target exactly from the passage.
+- Each target must be ONE continuous phrase: a single noun phrase, name, place, number or date.
+  Never a list of several items, never words joined with commas or semicolons, and never a bare
+  adjective or description (for example not "dark, gloomy").
+- For literal targets, select a meaningful fact or detail.
+- For inferential targets, select a passage detail that provides evidence
+  for a conclusion or interpretation.
+- Select different parts of the passage.
+- Do not repeat answer targets.
+- Do not invent facts.
+
+Return valid JSON only, using this format:
+{{
+  "items": [
+    {{
+      "kind": "Literal",
+      "answer": "exact phrase copied from the passage"
+    }},
+    {{
+      "kind": "Inferential",
+      "answer": "exact phrase copied from the passage"
+    }}
+  ]
+}}
+
+Return exactly {n_targets} items if the passage supports that many distinct targets.
+
+Passage:
+{passage}
+"""
+
+    raw_answers = ask_sealion(
+        "Select answer phrases from the supplied passage. Return valid JSON only.",
+        answer_prompt,
+        temperature=0.2,
+        max_tokens=500,
+        use_adapter=False,  # the Socratic adapter is trained to avoid stating answers
+    )
+
+    lap("step 1, SEA-LION picks answer targets")
+    try:
+        answer_data = parse_json_response(raw_answers)
+        answer_items = answer_data.get("items", [])
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not parse answer phrases from SEA-LION: {e}"
+        )
+
+    # STEP 2: Use T5 to generate the actual question wording.
+    generated = []
+    used_questions = set()
+    used_answers = set()
+
+    for item in answer_items:
+        if len(generated) >= n:
+            break
+
+        answer = str(item.get("answer", "")).strip()
+        kind = str(item.get("kind", "Literal")).strip()
+
+        if not answer:
+            continue
+
+        if re.search(r"[,;:]\s|\s[-–—]\s", answer):
+            print(f"[Quiz] Skipped (target is a list or fragment): {answer}")
+            continue
+
+        start = passage.lower().find(answer.lower())
+        if start == -1:
+            print(f"[Quiz] Skipped (target not found word for word in the passage): {answer}")
+            continue
+
+        exact_answer = passage[start:start + len(answer)]
+
+        if exact_answer.lower() in used_answers:
+            print(f"[Quiz] Skipped (target already used): {exact_answer}")
+            continue
+
+        if len(exact_answer.split()) > max_words:
+            print(f"[Quiz] Skipped (answer longer than {max_words} words): {exact_answer}")
+            continue
+
+        # Try the best few questions for this answer; keep the first one mT5 can answer back.
+        question = None
+        # Ranked best first, so the right question word wins when mT5 wrote it.
+        # Nothing is removed here, every check below still runs.
+        for candidate in rank_questions(make_questions(exact_answer, passage, lang),
+                                        exact_answer, passage):
+            if candidate.lower() in used_questions:
+                print(f"[Quiz] Skipped (same question as an earlier one): {candidate}")
+                continue
+            if lang == "en" and question_is_garbled(candidate):
+                print(f"[Quiz] Dropped (ungrammatical question): {candidate}")
+                continue
+            if copies_passage(candidate, passage):
+                print(f"[Quiz] Dropped (question copies {QG_MAX_COPY}+ words in a row from the passage): {candidate}")
+                continue
+            if not question_fits_answer(candidate, exact_answer):
+                print(f"[Quiz] Dropped (answer is a number or amount but the question does not ask for one): "
+                      f"{candidate} -> {exact_answer}")
+                continue
+            if answer_matches(candidate, exact_answer, passage, lang):
+                question = candidate
+                break
+            print(f"[Quiz] Dropped (mT5 answer mismatch): {candidate}")
+        if not question:
+            print(f"[Quiz] No usable question for target: {exact_answer}")
+            continue
+
+        used_answers.add(exact_answer.lower())
+        used_questions.add(question.lower())
+
+        generated.append({
+            "kind": kind,
+            "q": question,
+            "correct_text": exact_answer
         })
+
+    lap("step 2, mT5 questions + answer checks (CPU unless QG_DEVICE=cuda)")
+
+    # mT5 is the question generator, but on this hardware it often comes up
+    # short, and an empty list used to kill the whole quiz. When it does,
+    # SEA-LION words the questions mT5 could not handle, so the student still
+    # gets a quiz. Each question records which model wrote it, so an evaluation
+    # can count the two apart. QG_FALLBACK=0 goes back to failing.
+    for item in generated:
+        item.setdefault("source", "mt5")
+
+    if len(generated) < n and QG_FALLBACK:
+        done = {g["correct_text"].lower() for g in generated}
+        left = [i for i in answer_items
+                if str(i.get("answer", "")).strip()
+                and str(i.get("answer", "")).strip().lower() not in done]
+        if left:
+            made = sealion_questions(passage, left[: n - len(generated)])
+            for q in made:
+                if q["q"].lower() in used_questions:
+                    continue
+                used_questions.add(q["q"].lower())
+                generated.append(q)
+            print(f"[Quiz] mT5 fell short, SEA-LION wrote {len(made)} question(s)")
+
+    if not generated:
+        raise RuntimeError(
+            "Neither mT5 nor the fallback could turn the selected answer phrases into questions."
+            if QG_FALLBACK else
+            "T5 could not generate questions from the selected answer phrases."
+        )
+
+    print(f"[Quiz] Requested questions: {n}")
+    print(f"[Quiz] Answer targets returned: {len(answer_items)}")
+    print(f"[Quiz] questions by mT5: {sum(1 for g in generated if g.get('source') == 'mt5')}, "
+          f"by the SEA-LION fallback: {sum(1 for g in generated if g.get('source') == 'sealion')}")
+    print(f"[Quiz] questions: {generated}")
+
+    # STEP 3: Use SEA-LION to create the answer options and supporting details.
+    # Keep the question wording generated by T5 unchanged.
+    questions_for_sealion = [
+        {
+            "kind": item["kind"],
+            "q": item["q"],
+            "correct_answer": item["correct_text"]
+        }
+        for item in generated
+    ]
+
+    
+
+    def options_for(chunk):
+        """One SEA-LION call for a few questions. The budget follows the count,
+        because a fixed 1200 tokens ran out as the quiz grew and the output was
+        cut off mid-JSON. A chunk that will not parse costs only its own
+        questions rather than the whole quiz."""
+        raw_options = ask_sealion(
+            "You are a careful quiz writer. Follow every quiz rule exactly. "
+            "Return only valid JSON with concise options, a correct answer index, "
+            "a matching explanation, and evidence copied from the passage.",
+            build_options_prompt(passage, chunk, why_language),
+            temperature=0.2,
+            max_tokens=250 * len(chunk) + 200,
+            use_adapter=False,  # base model: this step must state the correct answer
+        )
+        try:
+            return parse_json_response(raw_options).get("questions", [])
+        except json.JSONDecodeError as e:
+            print(f"[Quiz] SEA-LION returned invalid JSON for this chunk: {e}")
+            print("[Quiz] Attempting to repair JSON...")
+            try:
+                return repair_json_questions(raw_options)
+            except Exception as e2:
+                print(f"[Quiz] Repair failed, losing {len(chunk)} question(s): {e2}")
+                return []
+        except Exception as e:
+            print(f"[Quiz] Could not read the options for this chunk: {e}")
+            return []
+
+    option_items = []
+    for i in range(0, len(questions_for_sealion), QUIZ_OPTION_CHUNK):
+        chunk = questions_for_sealion[i:i + QUIZ_OPTION_CHUNK]
+        option_items.extend(options_for(chunk))
+    if not option_items:
+        raise RuntimeError("SEA-LION returned no usable options for any question.")
+
+
+    # STEP 4: Combine T5 questions with SEA-LION's supporting quiz fields.
+    cleaned = []
+
+    for idx, item in enumerate(generated):
+        support = support_for(item, idx, option_items, len(generated))
+        if support is None:
+            print(f"[Quiz] No options returned for: {item['q']}")
+            continue
+        correct_text = item["correct_text"]
+
+        flag = support.get("question_ok")
+        print(f"[Quiz] SEA-LION question_ok={flag!r} for: {item['q']}")
+        if str(flag).strip().lower() in ("false", "no", "0"):
+            better = str(support.get("better_question", "")).strip()
+            ok = bool(better) and _cmp(better) != _cmp(item["q"])
+            ok = ok and not copies_passage(better, passage)
+            ok = ok and not (lang == "en" and question_is_garbled(better))
+            ok = ok and question_fits_answer(better, correct_text)
+            ok = ok and answer_matches(better, correct_text, passage, lang)
+            if not ok:
+                print(f"[Quiz] Rejected (SEA-LION says the question does not fit its answer, "
+                      f"and its rewrite {better!r} failed the checks): {item['q']}")
+                continue
+            print(f"[Quiz] Rewrote question: {item['q']} -> {better}")
+            item = dict(item, q=better)
+
+        correct_option = str(support.get("correct_option", "")).strip()
+        distractors = support.get("distractors", [])
+
+        # The keyed answer must still say what mT5 verified, otherwise the "why" and the
+        # evidence may explain a different answer.
+        if not option_matches_span(correct_option, correct_text):
+            print(f"[Quiz] Rejected: option '{correct_option}' drifted from verified answer "
+                  f"'{correct_text}' for: {item['q']}")
+            continue
+
+        if (
+            not correct_option
+            or not isinstance(distractors, list)
+            or len(distractors) != 3
+        ):
+            print(f"[Quiz] Rejected malformed options for: {item['q']}")
+            continue
+
+        distractors = [str(option).strip() for option in distractors]
+
+        if any(not option for option in distractors):
+            print(f"[Quiz] Rejected empty option for: {item['q']}")
+            continue
+
+        distractors = clean_distractors(distractors, correct_option, correct_text)
+        if len(distractors) != 3:
+            print(f"[Quiz] Rejected: a distractor repeated or overlapped the answer for: {item['q']}")
+            continue
+
+        clash = distractor_in_answer_sentence(distractors, passage, correct_text) if SAME_SENTENCE_CHECK else None
+        if clash:
+            print(f"[Quiz] Rejected: distractor '{clash}' is in the same passage sentence as the answer "
+                  f"'{correct_text}', so it may also be correct: {item['q']}")
+            continue
+
+        all_options = [correct_option] + distractors
+        normalized_options = [
+            " ".join(option.casefold().split())
+            for option in all_options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate options for: {item['q']}")
+            continue
+
+        random.shuffle(all_options)
+
+        options = all_options
+        answer_index = options.index(correct_option)
+
+        # Reject malformed option lists.
+        if (
+            not isinstance(options, list)
+            or len(options) != 4
+            or not all(isinstance(option, str) for option in options)
+            or not isinstance(answer_index, int)
+            or isinstance(answer_index, bool)
+            or not 0 <= answer_index < 4
+        ):
+            print(f"[Quiz] Rejected malformed options for: {item['q']}")
+            print(f"[Quiz] Options received: {options}")
+            continue
+
+        options = [option.strip() for option in options]
+
+        if any(not option for option in options):
+            print(f"[Quiz] Rejected empty option for: {item['q']}")
+            continue
+
+        # Reject exact duplicate options, ignoring capitalization.
+        normalized_options = [
+            " ".join(option.casefold().split())
+            for option in options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate options for: {item['q']}")
+            print(f"[Quiz] Options received: {options}")
+            continue
+
+        # Normalize text for comparisons.
+        def normalize_text(text):
+            return " ".join(text.casefold().split())
+
+        final_answer_index = answer_index
+        correct_option = options[final_answer_index]
+
+        # Reject answers that are too long to be concise.
+        word_count = len(correct_option.split())
+
+        if word_count > 12:
+            print(
+            f"[Quiz] Warning: Long correct option "
+            f"({word_count} words): {item['q']}"
+        )
+        print(f"[Quiz] Correct option: {correct_option}")
+
+        # Reject a correct option that simply repeats the evidence.
+        evidence = str(support.get("evidence", "")).strip()
+        why = str(support.get("why", "")).strip()
+
+        if not evidence:
+            print(f"[Quiz] Rejected missing evidence: {item['q']}")
+            continue
+
+        found = find_evidence(evidence, passage)
+        if not found:
+            print(
+                f"[Quiz] Rejected evidence not found in passage: "
+                f"{item['q']}"
+            )
+            print(f"[Quiz] Evidence: {evidence}")
+            continue
+        evidence = found   # the passage's own wording, not the model's copy of it
+
+        if not why or normalize_text(why) == normalize_text(evidence):
+            print(
+                f"[Quiz] Rejected missing or repeated explanation: "
+                f"{item['q']}"
+            )
+            continue
+
+        # Final validation applies to EVERY question.
+        if len(options) != 4 or any(not option for option in options):
+            print(f"[Quiz] Rejected invalid final options: {item['q']}")
+            continue
+
+        normalized_options = [
+            normalize_text(option) for option in options
+        ]
+
+        if len(set(normalized_options)) != 4:
+            print(f"[Quiz] Rejected duplicate final options: {item['q']}")
+            continue
+
+        # Q1 to Q6: the giveaways that let a student pick the answer without
+        # having understood the passage. Every option rule above lives in the
+        # prompt, where it is a request. These are checked.
+        flaws = check_item(item["q"], options, final_answer_index, passage, lang)
+        if flaws:
+            print(f"[Quiz] Rejected, the answer gives itself away {flaws}: {item['q']}")
+            continue
+
+        # The kind was decided in step 1 against an answer phrase, before this
+        # question existed. Judge it from the finished question instead.
+        kind_now = label_for(item["q"], correct_option, passage)
+        if kind_now != item["kind"]:
+            print(f"[Quiz] Relabelled {item['kind']} -> {kind_now}: {item['q']}")
+
+        cleaned.append({
+            "kind": kind_now,
+            "q": item["q"],
+            "options": options,
+            "answer": final_answer_index,
+            "why": why,
+            "evidence": evidence,
+            # which model wrote the question, so an evaluation can separate them
+            "source": item.get("source", "mt5")
+        })
+
+    print(f"[Quiz] Questions returned by SEA-LION: {len(option_items)}")
+    print(f"[Quiz] Questions surviving validation: {len(cleaned)} "
+          f"(Literal {sum(1 for c in cleaned if c['kind'] == 'Literal')}, "
+          f"Inferential {sum(1 for c in cleaned if c['kind'] == 'Inferential')})")
+
     if not cleaned:
-        raise RuntimeError("Gemini did not return any usable questions.")
+        print("[Quiz] DEBUG: No questions survived final validation.")
+        print("[Quiz] Generated T5 questions:", generated)
+        print("[Quiz] SEA-LION option data:", option_items)
+
+        raise RuntimeError(
+            "No valid quiz questions survived validation. "
+            "Check the backend terminal for DEBUG output."
+        )
+
+    print(f"[Quiz][time] TOTAL: {time.perf_counter() - _clock[1]:.1f}s")
     return cleaned
 
 
@@ -248,19 +1698,9 @@ Reply with the question only."""
 
 
 def generate_checkin(ask: CheckinAsk) -> str:
-    lines = []
-    if ask.goal:
-        lines.append(f"The student's reading goal: {ask.goal}")
-    if ask.struggles:
-        lines.append("Spots they found confusing: " + " | ".join(s[:150] for s in ask.struggles[-5:]))
-    if ask.previous:
-        lines.append("Questions already asked (do not repeat): " + " | ".join(p[:150] for p in ask.previous[-5:]))
-    lines.append("\nTEXT:\n" + ask.text[:6000])
-    response = ask_gemini(CHECKIN_RULES, "\n".join(lines), temperature=0.9, max_tokens=600)
-    text = (response.text or "").strip().strip('"')
-    if not text:
-        raise RuntimeError("Gemini returned an empty reply.")
-    return text
+    goal = f"Student's reading goal: \"{ask.goal[:200]}\"\n" if ask.goal else ""
+    prompt = f"{goal}Text context: {ask.text[:3000]}\nGenerate a single checking question."
+    return ask_sealion(CHECKIN_RULES, prompt, history=None, temperature=0.8, max_tokens=60)
 
 
 # =====================================================================
@@ -268,28 +1708,110 @@ def generate_checkin(ask: CheckinAsk) -> str:
 # =====================================================================
 @app.get("/")
 def health():
-    """Open http://localhost:8000 in a browser to check the server is running."""
     return {
         "status": "ok",
-        "gemini_connected": client is not None,
-        "model": GEMINI_MODEL if client else None,
         "endpoints": ["/partner", "/quiz", "/checkin"],
     }
 
+# After this many answers that did not show understanding, the coach explains outright.
+GIVEUP_AFTER = int(os.getenv("GIVEUP_AFTER", "3"))
+
+# When mT5 cannot word a question, let SEA-LION write it rather than fail the
+# whole quiz. Each question still records which model wrote it. QG_FALLBACK=0
+# restores the old behaviour, for a run that must be mT5 only.
+QG_FALLBACK = os.getenv("QG_FALLBACK", "1") != "0"
+
+# "What do you mean?" and "huh?" are questions, but they say the student didn't understand.
+_CONFUSED = re.compile(
+    r"^\s*(huh|ha|what|ano|what do you mean|what does (that|it|this) mean|ano ang ibig mong sabihin|"
+    r"i (still )?(don'?t|do not) (get|understand)( it)?|(hindi|di) ko (gets|maintindihan|naiintindihan|alam))"
+    r"\s*[?!.]*\s*$", re.I)
+
+_ACK = re.compile(
+    r"^\s*(ok(ay)?|k|sige|oo|thanks?( you)?|thank u|ty|salamat( po)?|got it|i see|ah+|oh+|gets( ko)?)"
+    r"\s*[.!]*\s*$", re.I)
+
+def _is_answer(text):
+    # Questions back to the coach and "in English please" are not attempts at the answer,
+    # except a plain "I don't get it", which is the student saying they didn't understand.
+    if not text or language_request(text):
+        return False
+    return not gr.is_question(text) or bool(_CONFUSED.match(text))
+
+def should_give_up(ask):
+    """Explain outright once the student has made GIVEUP_AFTER real attempts, once per thread."""
+    if any(t.role == "coach" and t.mode == "giveup" for t in ask.history):
+        return False
+    if not _is_answer(ask.message):
+        return False
+    attempts = sum(1 for t in ask.history if t.role == "student" and _is_answer(t.text)) + 1
+    return attempts >= GIVEUP_AFTER
 
 def _fail(what: str, e: Exception):
     # The widget falls back to its offline demo if any of these fail.
     print(f"Error while {what}:", repr(e))
-    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Check the server window for details.")
-
+    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Try again in a moment, and tell whoever is running the backend if it keeps happening.")
 
 @app.post("/partner")
 def partner(ask: Ask):
     try:
-        return {"reply": generate_hint(ask)}
-    except Exception as e:
-        _fail("writing a hint", e)
+        requested = ask.mode
+        if requested in ("stuck", "explain"):
+            ask.mode = requested
+        elif not ask.message:
+            ask.mode = "debug"
+        elif language_request(ask.message) and len(ask.message.split()) <= 5:
+            ask.mode = "repeat"
+        else:
+            ask.mode = classify_intent(ask.message, target_passage=ask.passage,
+                                       last_coach=last_coach_line(ask))
+            # The backend decides when to explain outright; a "giveup" request from the widget
+            # (older widgets send it on the second reply, whatever it says) is not trusted.
+            if ask.mode in ("followup", "stuck") and should_give_up(ask):
+                ask.mode = "giveup"
+        # The third time the student is stuck (typed or the button), explain outright. This catches
+        # "what do you mean?" turns, which should_give_up doesn't count as attempts.
+        # Once the coach has explained outright, being stuck again gets another explanation,
+        # not the hint ladder from the start.
+        gave_up = any(t.role == "coach" and t.mode == "giveup" for t in ask.history)
+        if ask.mode == "stuck" and (gave_up or stuck_level(ask) >= GIVEUP_AFTER):
+            ask.mode = "giveup"
 
+        g = run_grounding(ask)
+        if ask.mode == "success" and g is not None and (g.label == gr.CONTRADICTED or g.missing_names):
+            # The classifier called it understood, but the text says otherwise (R6) or the answer
+            # names someone the text never mentions: don't confirm it or close the thread.
+            print(f"[grounding] success overruled by {g.rule}")
+            ask.mode = "followup"
+        if gave_up and ask.mode == "followup" and _ACK.match(ask.message or ""):
+            # "ok" after the explanation: close the turn instead of asking a fresh question.
+            reply_text = _KEEP_READING[pick_language(ask)]
+        elif g is not None and (g.label == gr.NOT_IN_TEXT or g.missing_names):
+            # R1, plus the same answer for a name the student brought up while
+            # answering rather than asking. Both end at the same fixed template,
+            # with no model call. Without the second case, "Explain why
+            # Crisostomo Ibarra left" went to the model, which had no idea who
+            # that was and asked about something else entirely.
+            reply_text = gr.fallback_reply(g, pick_language(ask))
+            if ask.mode in ("stuck", "giveup") and requested != "stuck":
+                ask.mode = "followup"  # asking about a name is not a rung on the hint ladder
+        else:
+            reply_text = generate_hint(ask, g)
+
+        print("\n" + "-" * 40)
+        stuck_info = f" (level {stuck_level(ask)})" if ask.mode == "stuck" else ""
+        print(f"[API REQUEST] /partner | Mode: {ask.mode}{stuck_info} | Problem: {ask.problem}")
+        print(f"   Target: {ask.passage} | Student said: {ask.message!r} | History turns: {len(ask.history)}"
+              f" | Language: {pick_language(ask)} (setting: {ask.response_language!r})")
+        print(f"[API RESPONSE]: {reply_text}")
+        print("-" * 40)
+        response = {"reply": reply_text, "mode": ask.mode}
+        if g is not None:
+            response["grounding"] = {"label": g.label, "rule": g.rule, "evidence_ids": g.evidence_ids}
+        return response
+    except Exception as e:
+        print("Error in /partner:", repr(e))
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/quiz")
 def quiz(ask: QuizAsk):
@@ -304,4 +1826,14 @@ def checkin(ask: CheckinAsk):
     try:
         return {"prompt": generate_checkin(ask)}
     except Exception as e:
-        _fail("writing a check-in", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+if __name__ == "__main__":
+    print(torch.cuda.is_available())
+    print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no GPU")
+    print(model.device)
+
+    import uvicorn
+    print("\nStarting FastAPI server for HTML widget on http://localhost:8000 ...\n")
+    uvicorn.run(app, host="127.0.0.1", port=8000)
