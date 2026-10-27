@@ -52,7 +52,7 @@
 
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove(); this.previousElementSibling.style.display='flex'" onload="this.previousElementSibling.style.display='none'"></span>
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="var f=this.previousElementSibling; this.style.display='none'; if(f) f.style.display='flex'" onload="var f=this.previousElementSibling; if(f) f.style.display='none'"></span>
         <span class="sidebar-brand-text">
           Reading Partner
           <span class="app-role-badge" id="appRoleBadge">Teacher</span>
@@ -359,6 +359,8 @@ async function openClassDetail(classId) {
         <div class="stat-tile"><div class="stat-num">${quizCount || 0}</div><div class="stat-label">Quizzes assigned</div></div>
         <div class="stat-tile"><div class="stat-num">${classQuizAverage(progressRows)}</div><div class="stat-label">Class quiz average</div></div>
       </div>
+      <p class="small" style="margin-top:8px">Student count is for this class. The rest counts everything
+      these students did with your readings, because a reading not saved to one class is open to all of them.</p>
       ${classInsightsHtml(myDebug, myCheckins)}`;
   }
 
@@ -387,7 +389,7 @@ async function openClassDetail(classId) {
     ${dashboardHtml}
 
     <h3 style="margin:26px 0 4px">Students</h3>
-    <p class="hint">Click a student to see their own progress. Each joined student's summary across this class's readings.</p>
+    <p class="hint">Click a student to see their own progress. Each row covers everything that student has done with your readings.</p>
     ${studentsHtml}
 
     <h3 style="margin:28px 0 4px">Quizzes for this class</h3>
@@ -439,7 +441,8 @@ function renderStudentDetail(cls, r) {
   el.innerHTML = `
     <button class="ghost" id="studentDetailBack" type="button">&larr; ${escapeHtml(cls.name)}</button>
     <h1>${escapeHtml(r.full_name || '(no name)')}</h1>
-    <p class="hint">Progress in ${escapeHtml(cls.name)}.</p>
+    <p class="hint">Everything this student has done with your readings. A reading you did not save to one
+    class is open to all of your students, so these totals cover more than ${escapeHtml(cls.name)} alone.</p>
     <div class="stat-grid">
       <div class="stat-tile"><div class="stat-num">${r.sessions_count}</div><div class="stat-label">Reading session${r.sessions_count === 1 ? '' : 's'}</div></div>
       <div class="stat-tile"><div class="stat-num">${r.resolved_count}</div><div class="stat-label">Cleared up</div></div>
@@ -643,10 +646,8 @@ async function loadReadingsInto(list, teacherId, classId, emptyMessage) {
 let currentClass = null;   // set by openClassDetail, used by the quiz builder
 
 /* The rest of this page only talks to Supabase */
-const QUIZ_CONFIG = Object.assign(
-  { API_BASE: 'http://localhost:8000' },
-  window.APP_CONFIG || {}
-);
+/* The address itself lives only in config.js, so there is one line to change */
+const QUIZ_CONFIG = Object.assign({ API_BASE: '' }, window.APP_CONFIG || {});
 
 const QUIZ_TIMEOUT_MS = 180000;
 

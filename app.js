@@ -1,8 +1,9 @@
 /* CONFIG */
-const CONFIG = Object.assign(
-  { API_BASE: "http://localhost:8000", CHECKIN_EVERY_SEC: 90 },
-  window.APP_CONFIG || {}
-);
+/* The backend address lives in config.js and nowhere else, so there is only one
+   line to change when the tunnel restarts. CHECKIN_EVERY_SEC is the only default
+   kept here, since it is a behaviour setting rather than an address. */
+const CONFIG = Object.assign({ API_BASE: '', CHECKIN_EVERY_SEC: 90 }, window.APP_CONFIG || {});
+if (!CONFIG.API_BASE) console.warn('No API_BASE in config.js, so the app will use its offline replies.');
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -386,7 +387,8 @@ function wireGoalForm(scope, g, onDone) {
     else ensureSession();
     // Low confidence starts check-ins closer together; high confidence starts
     nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
-    if (!state.checkin.on) startCheckins();
+    // Check-ins already started with the reading. Confidence only moves the next one.
+    if (state.checkin.on) state.checkin.nextAt = Date.now() + effectiveCheckinSec() * 1000;
     if (onDone) onDone();
     return true;
   };
@@ -549,7 +551,7 @@ function renderDebug() {
         </div>
         ${coachHasReplied(t) ? `
         <div class="row" style="margin-top:6px">
-          <button class="ghost" type="button" data-act="explain" data-id="${t.id}">${t.explained ? "I still don't get it" : 'Explain it to me'}</button>
+          <button class="btn alt" type="button" data-act="explain" data-id="${t.id}">${t.explained ? "I still don't get it" : 'Explain it to me'}</button>
         </div>` : ''}` : ''}
       ${t.status === 'resolved' && t.autoResolved ? `
         <div class="row" style="margin-top:8px; align-items:center">
@@ -745,6 +747,37 @@ function coachHasReplied(t) {
 /* Pressing the explain button offers the Socratic route one more time before
    the answer. Students who reach for the answer often just want it easier, and
    which one they pick is worth recording. */
+/* In-app confirm, same shape as the explain dialog. Replaces window.confirm,
+   whose box is titled with the browser's own text and looks nothing like the app. */
+function askConfirm({ title, body, yes, no, danger }) {
+  return new Promise(resolve => {
+    let dlg = $('#confirmDlg');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.id = 'confirmDlg';
+      document.body.appendChild(dlg);
+    }
+    dlg.innerHTML = `
+      <h3 style="margin:0 0 6px">${esc(title)}</h3>
+      <p class="small" style="margin:0 0 14px">${esc(body)}</p>
+      <div class="row">
+        <button class="btn${danger ? ' danger' : ''}" type="button" id="cfYes">${esc(yes)}</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" type="button" id="cfNo">${esc(no || 'Cancel')}</button>
+      </div>`;
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; try { dlg.close(); } catch (e) {} resolve(v); };
+    $('#cfYes', dlg).addEventListener('click', () => finish(true));
+    $('#cfNo', dlg).addEventListener('click', () => finish(false));
+    dlg.addEventListener('close', () => finish(false), { once: true });
+    try { dlg.showModal(); } catch (e) { finish(false); return; }
+    // A dialog opens with its first button focused. For something that undoes
+    // work, that must not be the button that does it.
+    if (danger) $('#cfNo', dlg).focus();
+  });
+}
+
 function askHintOrAnswer(id) {
   const t = state.threads.find(x => x.id === id); if (!t || t.busy) return;
   let dlg = $('#explainDlg');
@@ -958,7 +991,14 @@ function updateCountdown() {
 }
 setInterval(() => {
   const c = state.checkin;
-  if (c.on && !c.pending && Date.now() >= c.nextAt) fireCheckin();
+  if (!c.on || c.pending) { if (currentTab() === 'monitor') updateCountdown(); return; }
+  if (Date.now() < c.nextAt) { if (currentTab() === 'monitor') updateCountdown(); return; }
+  // Hold the clock while the student is off the reading: a check-in in the
+  // middle of a quiz or the Classes screen interrupts something else.
+  const reading = $('#readerWorkspace') && !$('#readerWorkspace').hidden
+    && !$('#readingsView').hidden;
+  if (!reading) { c.nextAt = Date.now() + 15000; }
+  else fireCheckin();
   if (currentTab() === 'monitor') updateCountdown();
 }, 1000);
 
@@ -986,19 +1026,29 @@ function renderStats() {
       <div class="stat"><b>${resolved}</b><span>Cleared up</span></div>
       <div class="stat"><b>${stuck}</b><span>Still stuck</span></div>
       <div class="stat"><b>${ci.length}</b><span>Check-ins answered</span></div>
-      <div class="stat" style="grid-column:1/-1"><b>${mins} min</b><span>Time in session</span></div>
+      <div class="stat stat-wide"><b>${mins} min</b><span>Time in session</span></div>
     </div>
     ${trend}
     ${goalRating}
     <div class="row" style="margin-top:14px">
       <button class="btn" id="endSessionBtn" type="button">End session</button>
+      <button class="btn alt" id="startOverBtn" type="button">Start over</button>
       <button class="btn alt" id="exportBtn" type="button">Download session data</button>
     </div>
-    <p class="small" style="margin-top:10px">The download is a JSON file of everything above. The teacher dashboard reads from the database directly.</p>
-    <p class="small" style="margin-top:4px"><a href="#" id="startOverLink">Start over on this same reading instead</a></p>`;
+    <p class="small" style="margin-top:10px">Start over clears your marks and goal but keeps you on this reading. End session takes you back to all readings. The download is a JSON file of everything above.</p>`;
   $('#endSessionBtn').addEventListener('click', endSession);
   $('#exportBtn').addEventListener('click', exportLog);
-  $('#startOverLink').addEventListener('click', (e) => { e.preventDefault(); if (confirm('Clear marks, goal, and progress for this reading and start it over?')) resetSession(); });
+  $('#startOverBtn').addEventListener('click', async () => {
+    const ok = await askConfirm({
+      title: 'Start this reading over?',
+      body: 'Your marks, goal, and progress for this reading are cleared. The reading itself stays open.',
+      yes: 'Start over', no: 'Keep what I have', danger: true
+    });
+    if (!ok) return;
+    resetSession();
+    // resetSession wipes the check-in clock, so start it again for the reading still open
+    startCheckins();
+  });
   const rateBtn = $('#rateGoalBtn');
   if (rateBtn) rateBtn.addEventListener('click', () => {
     $('#p-stats').insertAdjacentHTML('beforeend', `
@@ -1038,8 +1088,13 @@ function resetSession() {
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
 }
 /* "End session" leaves this reading entirely and returns to the picker */
-function endSession() {
-  if (!confirm('End this reading session and go back to all readings?')) return;
+async function endSession() {
+  const ok = await askConfirm({
+    title: 'End this session?',
+    body: 'This closes the reading and takes you back to all readings. Download your session data first if you want to keep it.',
+    yes: 'End session', no: 'Keep reading'
+  });
+  if (!ok) return;
   resetSession();
   showReadingPicker();
 }
@@ -1108,7 +1163,7 @@ $('#pasteDlg').querySelector('form').addEventListener('submit', (e) => {
   if (pasteTarget === 'reader') {
     enterReader({ title, byline: 'Your own text', bodyHtml: paragraphsToHtml(raw), readingId: null });
   } else {
-    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: true, title, text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
+    setQuizCtx({ readingId: null, isDemo: false, demoId: null, isPasted: true, title, text: raw, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null });
     renderQuizWorkspace();
   }
 });
@@ -1125,6 +1180,9 @@ function showView(name) {
     b.setAttribute('aria-current', active ? 'page' : 'false');
   });
   $$('.view').forEach(v => { v.hidden = v.id !== name + 'View'; });
+  // Re-read the reading list on the way in, so a class joined a moment ago
+  // shows up without a page reload. An open reading is left alone.
+  if (name === 'readings' && !$('#pickerPane').hidden) showReadingPicker();
   if (name === 'quizzes') renderQuizzesView();
   if (name === 'classes') renderClassesView();
   if (name === 'history') renderHistoryView();
@@ -1134,6 +1192,12 @@ $$('.side-link').forEach(b => b.addEventListener('click', () => showView(b.datas
 
 /* CLASSES: join a teacher's class with a code */
 let openClassId = null;
+/* A render that reads the database can be overtaken by a newer one. Each pane
+   keeps a counter; a render that is no longer the latest stops before it paints,
+   so a slow older render cannot put stale cards back on the screen. */
+const renderTokens = { classes: 0, readings: 0, quizzes: 0 };
+function newRender(pane) { return ++renderTokens[pane]; }
+function stillCurrent(token, pane = 'classes') { return token === undefined || token === renderTokens[pane]; }
 
 async function renderClassesView() {
   const el = $('#classesPane');
@@ -1142,15 +1206,19 @@ async function renderClassesView() {
     return;
   }
   el.innerHTML = `<h1>Your classes</h1><p class="hint">Loading…</p>`;
+  // Two renders can overlap (click a class, then Back before it finishes). The
+  // later one wins, so a finished older one does not paint over it.
+  const token = newRender('classes');
   try {
-    if (openClassId) await renderClassDetail(el, openClassId);
-    else await renderClassesViewInner(el);
+    if (openClassId) await renderClassDetail(el, openClassId, token);
+    else await renderClassesViewInner(el, token);
   } catch (err) {
+    if (!stillCurrent(token)) return;
     el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">Could not load your classes: ${esc((err && err.message) || String(err))}</p>`;
   }
 }
 
-async function renderClassDetail(el, classId) {
+async function renderClassDetail(el, classId, token) {
   const backBtn = '<button class="ghost" id="clsBack" type="button">&larr; All classes</button>';
   const wireBack = () => {
     const b = $('#clsBack', el);
@@ -1160,6 +1228,7 @@ async function renderClassDetail(el, classId) {
   const { data: cls, error: clsErr } = await supa
     .from('classes').select('id, name, teacher_id').eq('id', classId).maybeSingle();
 
+  if (!stillCurrent(token)) return;
   if (clsErr || !cls) {
     el.innerHTML = `<div class="row">${backBtn}</div>
       <h1>Class</h1>
@@ -1203,6 +1272,7 @@ async function renderClassDetail(el, classId) {
     main = `<p class="small">No readings have been added to this class yet.</p>`;
   }
 
+  if (!stillCurrent(token)) return;
   el.innerHTML = `
     <div class="row">${backBtn}</div>
     <h1 style="margin-top:10px">${esc(cls.name)}</h1>
@@ -1217,29 +1287,27 @@ async function renderClassDetail(el, classId) {
   wireBack();
 
   $$('.lib-card[data-id]', el).forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true;
-    const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
-    if (rErr || !r) {
-      el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`);
-      b.disabled = false;
-      return;
-    }
+    const r = await fetchReadingForCard(b);
+    if (!r) return;
     showView('readings');
     enterReader({
       title: r.title,
       byline: 'Added by your teacher',
       bodyHtml: paragraphsToHtml(r.body),
-      readingId: r.id
+      readingId: r.id,
+      // So "Back to <class>" returns to the class page the student came from
+      from: { kind: 'class', id: classId, name: cls.name }
     });
   }));
 }
 
-async function renderClassesViewInner(el) {
+async function renderClassesViewInner(el, token) {
   const { data: memberships, error } = await supa
     .from('class_members')
-    .select('class_id, joined_at')
+    .select('class_id')          // joined_at was selected and never used, and breaks if the column is absent
     .eq('student_id', state.user.id);
 
+  if (!stillCurrent(token)) return;
   if (error) {
     el.innerHTML = `<h1>Your classes</h1><p class="small" style="color:var(--bug)">Could not read your class list: ${esc(error.message)}</p>`;
     return;
@@ -1277,6 +1345,7 @@ async function renderClassesViewInner(el) {
 
   const orphaned = classIds.length - classRows.length;
 
+  if (!stillCurrent(token)) return;
   el.innerHTML = `
     <h1>Your classes</h1>
     <p class="hint">Joining a class lets you see the readings that teacher adds. Ask your teacher for their class's join code.</p>
@@ -1298,15 +1367,19 @@ async function renderClassesViewInner(el) {
     const codeInput = $('#joinCodeInput');
     const code = codeInput.value.trim().toUpperCase();
     if (!code) return;
-    const { data: cls, error: findErr } = await supa.from('classes').select('id').eq('join_code', code).maybeSingle();
+    const { data: cls, error: findErr } = await supa.from('classes').select('id, name').eq('join_code', code).maybeSingle();
     if (findErr || !cls) { showToast("That join code didn't match a class. Double-check it with your teacher.", 'bug'); return; }
     const { error: joinErr } = await supa.from('class_members').insert({ class_id: cls.id, student_id: state.user.id });
     if (joinErr) {
       showToast(/duplicate|unique/i.test(joinErr.message) ? "You're already in that class." : 'Could not join: ' + joinErr.message, 'bug');
+      if (/duplicate|unique/i.test(joinErr.message)) { codeInput.value = ''; openClassId = cls.id; renderClassesView(); }
       return;
     }
     codeInput.value = '';
-    showToast('Joined the class.', 'ok');
+    showToast('Joined ' + (cls.name || 'the class') + '.', 'ok');
+    // Land on the class page, so the readings that come with the class are
+    // visible straight away instead of needing a reload.
+    openClassId = cls.id;
     renderClassesView();
   });
 
@@ -1327,7 +1400,13 @@ async function renderClassesViewInner(el) {
   el.querySelectorAll('[data-act="leave"]').forEach(btn => btn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const row = btn.closest('[data-class]');
-    if (!confirm("Leave this class? You'll lose access to that teacher's readings until you rejoin.")) return;
+    const name = (row.querySelector('b') || {}).textContent || 'this class';
+    const ok = await askConfirm({
+      title: 'Leave ' + name + '?',
+      body: "You will not see that teacher's readings until you rejoin with the class code.",
+      yes: 'Leave class', no: 'Stay in the class', danger: true
+    });
+    if (!ok) return;
     const { error: leaveErr } = await supa.from('class_members').delete().eq('class_id', row.dataset.class).eq('student_id', state.user.id);
     if (leaveErr) { showToast('Could not leave: ' + leaveErr.message, 'bug'); return; }
     showToast('Left the class.', 'ok');
@@ -1429,6 +1508,23 @@ function readingCardsHtml(readings, iconSvg, opts = {}) {
     </button>`;
   }).join('')}</div>`;
 }
+/* Fetches one reading row for a card click. Returns null and says so on the
+   card itself if the row cannot be read, instead of leaving a dead button. */
+async function fetchReadingForCard(btn) {
+  btn.disabled = true;
+  const old = btn.querySelector('.lib-card-fail');
+  if (old) old.remove();
+  const { data, error } = await supa.from('readings').select('*').eq('id', btn.dataset.id).single();
+  if (error || !data) {
+    btn.disabled = false;
+    btn.insertAdjacentHTML('beforeend',
+      `<span class="lib-card-fail">Could not open this reading. Try again, or ask your teacher whether it is still shared.</span>`);
+    btn.scrollIntoView({ block: 'nearest' });
+    console.warn('Could not open reading', btn.dataset.id, error && error.message);
+    return null;
+  }
+  return data;
+}
 /* Built-in demo readings reuse the same card markup */
 function demoReadingObjs() { return DEMO_READINGS.map(d => ({ id: d.id, title: d.title, body: d.text })); }
 const BOOK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.2c2.3-1 5-1 7 .3v12.8c-2-1.3-4.7-1.3-7-.3V5.2Z"/><path d="M18.5 5.2c-2.3-1-5-1-7 .3v12.8c2-1.3 4.7-1.3 7-.3V5.2Z"/></svg>`;
@@ -1443,26 +1539,53 @@ async function getVisibleReadings() {
 
   const classIds = (memberships || []).map(m => m.class_id).filter(Boolean);
 
-  const base = () => supa.from('readings').select('id, title, body, created_at')
+  const base = (cols) => supa.from('readings').select(cols)
     .not('teacher_id', 'is', null)
     .order('created_at', { ascending: false });
+  const FULL = 'id, title, body, created_at, class_id';
 
   let res;
   if (classIds.length) {
     const list = classIds.map(id => '"' + id + '"').join(',');
-    res = await base().or('class_id.is.null,class_id.in.(' + list + ')');
+    res = await base(FULL).or('class_id.is.null,class_id.in.(' + list + ')');
   } else {
-    res = await base().is('class_id', null);
+    res = await base(FULL).is('class_id', null);
   }
 
   if (res.error && isMissingColumn(res.error, 'class_id')) {
-    res = await base();
+    res = await base('id, title, body, created_at');
     if (!res.error) res.degraded = 'class_id';
   }
 
   res.joinedCount = classIds.length;
   res.stage = 'readings';
   return res;
+}
+
+/* Builds the two teacher sections. A reading saved to a class the student joined
+   goes under "From your classes"; one with no class goes under "From your
+   teachers", because filing those under a class was misleading. */
+function teacherReadingsHtml(res, icon, linkId, opts = {}) {
+  if (res.error || !res.data || !res.data.length) {
+    return `<h3 style="margin:28px 0 0">From your classes</h3>${readingsEmptyHtml(res, linkId)}`;
+  }
+  if (res.degraded === 'class_id') {
+    return `<h3 style="margin:28px 0 0">From your teachers</h3>
+      <p class="small" style="margin:4px 0 0">Readings cannot be split by class on this database yet.</p>
+      ${readingCardsHtml(res.data, icon, opts)}`;
+  }
+  const inClass = res.data.filter(r => r.class_id);
+  const general = res.data.filter(r => !r.class_id);
+  let out = '';
+  if (inClass.length) {
+    out += `<h3 style="margin:28px 0 0">From your classes</h3>${readingCardsHtml(inClass, icon, opts)}`;
+  }
+  if (general.length) {
+    out += `<h3 style="margin:28px 0 0">From your teachers</h3>
+      <p class="small" style="margin:4px 0 0">Not tied to one class, so every student of that teacher can read them.</p>
+      ${readingCardsHtml(general, icon, opts)}`;
+  }
+  return out;
 }
 
 function readingsEmptyHtml(res, linkId) {
@@ -1491,37 +1614,43 @@ async function getBuiltInReadings() {
   return { rows: data, fromDb: true };
 }
 
-$('#changeReadingBtn').addEventListener('click', () => showReadingPicker());
+/* Where the open reading was picked, so the reader's back button goes back there */
+let readerFrom = { kind: 'readings' };
+$('#changeReadingBtn').addEventListener('click', () => {
+  if (readerFrom.kind === 'class') {
+    $('#readerWorkspace').hidden = true;
+    $('#pickerPane').hidden = false;
+    openClassId = readerFrom.id;
+    showView('classes');
+    return;
+  }
+  showReadingPicker();
+});
 
 async function showReadingPicker() {
   $('#readerWorkspace').hidden = true;
   const picker = $('#pickerPane');
   picker.hidden = false;
   picker.innerHTML = `<h1>Choose a reading</h1><p class="hint">Loading…</p>`;
+  const token = newRender('readings');
 
   const res = await getVisibleReadings();
-  const readings = res.data;
   const builtIn = await getBuiltInReadings();
-
-  const teacherGrid = (!res.error && readings && readings.length)
-    ? readingCardsHtml(readings, BOOK_ICON)
-    : readingsEmptyHtml(res, 'goToClasses');
+  if (!stillCurrent(token, 'readings')) return;
 
   picker.innerHTML = `
     <h1>Choose a reading</h1>
     <p class="hint">Pick a built-in practice text, something your teacher added, or paste your own.</p>
     <h3 style="margin:22px 0 0">Built-in practice readings</h3>
     ${readingCardsHtml(builtIn.rows, DEMO_READING_ICON, { demo: !builtIn.fromDb, builtIn: true })}
-    <h3 style="margin:28px 0 0">From your classes</h3>
-    ${teacherGrid}
+    ${teacherReadingsHtml(res, BOOK_ICON, 'goToClasses')}
     <div class="row" style="margin-top:16px">
       <button class="btn alt" id="pickPaste" type="button">Paste or upload my own text</button>
     </div>`;
 
   $$('.lib-card[data-id]', picker).forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true;
-    const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
-    if (rErr || !r) { picker.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
+    const r = await fetchReadingForCard(b);
+    if (!r) return;
     // Both grids on this page render data-id cards, so the byline has to come
     enterReader({
       title: r.title,
@@ -1540,10 +1669,16 @@ async function showReadingPicker() {
   if (classesLink) classesLink.addEventListener('click', (e) => { e.preventDefault(); showView('classes'); });
 }
 
-function enterReader({ title, byline, bodyHtml, readingId }) {
+function enterReader({ title, byline, bodyHtml, readingId, from }) {
   resetSession();
   setReaderText(title, byline, bodyHtml);
   state.reading = { id: readingId };
+  // Where the reader was opened from, so the back button returns there
+  readerFrom = from || { kind: 'readings' };
+  const back = $('#changeReadingBtn');
+  if (back) back.innerHTML = readerFrom.kind === 'class'
+    ? '&larr; Back to ' + esc(readerFrom.name || 'class')
+    : '&larr; All readings';
   // Set after resetSession, which clears it. Only a text with no reading row
   state.pastedTitle = readingId ? null : title;
 
@@ -1552,10 +1687,19 @@ function enterReader({ title, byline, bodyHtml, readingId }) {
   $('#pasteBtn').hidden = false;
 
   renderGoal(); renderDebug();
+  // Start the clock with the reading, not with the goal, so skipping the goal
+  // popup does not leave check-ins switched off for the whole session.
+  startCheckins();
   showGoalPopup();
 }
 
 /* QUIZZES: its own top-level view, decoupled from the reading workspace */
+/* Bumped whenever the quiz screen changes, so a slow question request that lands
+   after the student backed out or picked another reading is dropped, not painted. */
+let quizRequestToken = 0;
+/* Every switch of what the quiz screen is about goes through here */
+function setQuizCtx(next) { quizRequestToken++; clearInterval(quizWaitTimer); quizCtx = next; }
+
 let quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
 
 async function ensureQuizSession() {
@@ -1592,16 +1736,13 @@ const QUIZ_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 async function renderQuizPicker() {
   const el = $('#quizzesPane');
   el.innerHTML = `<h1>Quizzes</h1><p class="hint">Loading…</p>`;
+  const token = newRender('quizzes');
 
   const res = await getVisibleReadings();
-  const readings = res.data;
 
   const assigned = await getAssignedQuizzes();
   const builtIn = await getBuiltInReadings();
-
-  const teacherGrid = (!res.error && readings && readings.length)
-    ? readingCardsHtml(readings, QUIZ_ICON)
-    : readingsEmptyHtml(res, 'goToClassesQuiz');
+  if (!stillCurrent(token, 'quizzes')) return;
 
   el.innerHTML = `
     <h1>Quizzes</h1>
@@ -1618,23 +1759,21 @@ async function renderQuizPicker() {
       </button>`).join('')}</div>` : ''}
     <h3 style="margin:22px 0 0">Built-in practice texts</h3>
     ${readingCardsHtml(builtIn.rows, DEMO_READING_ICON, { demo: !builtIn.fromDb, builtIn: true, kind: 'quiz' })}
-    <h3 style="margin:28px 0 0">From your classes</h3>
-    ${teacherGrid}
+    ${teacherReadingsHtml(res, QUIZ_ICON, 'goToClassesQuiz')}
     <div class="row" style="margin-top:16px">
       <button class="btn alt" id="quizPaste" type="button">Paste or upload my own text</button>
     </div>`;
 
   $$('.lib-card[data-id]', el).forEach(b => b.addEventListener('click', async () => {
-    b.disabled = true;
-    const { data: r, error: rErr } = await supa.from('readings').select('*').eq('id', b.dataset.id).single();
-    if (rErr || !r) { el.insertAdjacentHTML('beforeend', `<p class="small" style="color:var(--bug)">Could not open that reading.</p>`); return; }
-    quizCtx = { readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
+    const r = await fetchReadingForCard(b);
+    if (!r) return;
+    setQuizCtx({ readingId: r.id, isDemo: false, demoId: null, isPasted: false, title: r.title, text: r.body, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null });
     renderQuizWorkspace();
   }));
   $$('.lib-card[data-demo]', el).forEach(b => b.addEventListener('click', () => {
     const d = DEMO_READINGS.find(x => x.id === b.dataset.demo);
     if (!d) return;
-    quizCtx = { readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
+    setQuizCtx({ readingId: null, isDemo: true, demoId: d.id, isPasted: false, title: d.title, text: d.text, sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null });
     renderQuizWorkspace();
   }));
   $$('button[data-assigned]', el).forEach(b => b.addEventListener('click', async () => {
@@ -1697,14 +1836,14 @@ async function openAssignedQuiz(quizId) {
       e ? ': ' + esc(e.message) : '.'}</p>`;
     return;
   }
-  quizCtx = {
+  setQuizCtx({
     readingId: quiz.reading_id, isDemo: false, demoId: null, isPasted: false,
     title: quiz.title, text: '', sessionId: null,
     questions: rows.map(r => ({ id: r.id, kind: r.kind, q: r.q, options: r.options,
                                 answer: r.answer, why: r.why, evidence: r.evidence })),
     answers: {}, status: 'ready', error: '', source: 'teacher',
     quizId: quiz.id, instructions: quiz.instructions
-  };
+  });
   // Show what they answered before rather than a blank quiz. Only the first
   await loadPreviousAnswers();
   renderQuizWorkspace();
@@ -1725,8 +1864,24 @@ function questionsSupported(words) {
 /* What the student picked on the "Make my quiz" screen */
 const quizPrefs = { n: 5, kinds: 'mixed' };
 
+/* Counts the seconds on the quiz loading screen, so a long wait does not look frozen */
+let quizWaitTimer = null;
+function tickQuizWait() {
+  clearInterval(quizWaitTimer);
+  const paint = () => {
+    const el = $('#quizWaited');
+    if (!el || quizCtx.status !== 'loading') { clearInterval(quizWaitTimer); return; }
+    const s = Math.round((Date.now() - (quizCtx.startedAt || Date.now())) / 1000);
+    el.textContent = s < 5 ? '' : `Waiting ${s} seconds so far.`;
+  };
+  paint();
+  quizWaitTimer = setInterval(paint, 1000);
+}
+
 async function loadQuizQuestions() {
   quizCtx.status = 'loading'; quizCtx.error = ''; quizCtx.answers = {};
+  quizCtx.startedAt = Date.now();
+  const token = ++quizRequestToken;
   renderQuizWorkspace();
   const supported = questionsSupported(countWords(quizCtx.text));
   const d = await callBackend('/quiz', {
@@ -1737,6 +1892,8 @@ async function loadQuizQuestions() {
     // Follows the coach-language setting they already chose in Settings rather
     language: state.responseLanguage === 'auto' ? null : state.responseLanguage
   });
+  // They backed out or picked another reading while this was in flight.
+  if (token !== quizRequestToken) return;
   if (d && Array.isArray(d.questions) && d.questions.length) {
     quizCtx.questions = d.questions; quizCtx.source = 'ai'; quizCtx.status = 'ready';
   } else if (quizCtx.demoId === 'demo-lamp') {
@@ -1745,9 +1902,10 @@ async function loadQuizQuestions() {
   } else {
     quizCtx.status = 'error';
     quizCtx.error = CONFIG.API_BASE
-      ? 'The backend could not make a quiz. Look at the server window for the error, then try again.'
-      : 'Making a quiz needs the backend (this built-in text doesn\'t have a ready-made offline quiz). Set API_BASE at the top of app.js.';
+      ? 'The question writer did not answer this time. Press Try again. If it keeps failing, tell your teacher the quiz service is down.'
+      : 'Making a quiz needs the reading partner service, and it is not set up on this copy of the site. Tell your teacher.';
   }
+  clearInterval(quizWaitTimer);
   renderQuizWorkspace();
 }
 
@@ -1756,8 +1914,17 @@ function renderQuizWorkspace() {
   const back = `<button class="ghost" id="quizBack" type="button">&larr; All readings</button>`;
 
   if (quizCtx.status === 'loading') {
-    el.innerHTML = `${back}<h1>${esc(quizCtx.title)}</h1><p class="hint">Writing questions from this text… this can take several seconds.</p>`;
+    const n = Math.min(quizPrefs.n, questionsSupported(countWords(quizCtx.text)));
+    el.innerHTML = `
+      ${back}<h1>${esc(quizCtx.title)}</h1>
+      <div class="card">
+        <b>Writing your questions</b>
+        <div class="quiz-wait" aria-hidden="true"><span></span></div>
+        <p class="small" style="margin:10px 0 0">${n} question${n === 1 ? '' : 's'} from this text will appear on this screen when they are ready. On a slower computer this takes a minute or two.</p>
+        <p class="small" id="quizWaited" style="margin:4px 0 0" role="status"></p>
+      </div>`;
     wireQuizBack(el);
+    tickQuizWait();
     return;
   }
   if (quizCtx.status !== 'ready') {
@@ -1821,7 +1988,7 @@ function renderQuizWorkspace() {
 }
 function wireQuizBack(el) {
   $('#quizBack', el).addEventListener('click', () => {
-    quizCtx = { readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null };
+    setQuizCtx({ readingId: null, isDemo: false, demoId: null, isPasted: false, title: '', text: '', sessionId: null, questions: [], answers: {}, status: 'idle', error: '', source: null, quizId: null, instructions: null });
     renderQuizzesView();
   });
 }
