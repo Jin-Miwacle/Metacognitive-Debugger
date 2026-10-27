@@ -91,6 +91,11 @@ _ANY_QUESTION_WORD = re.compile(
     r"ilan|ilang|gaano|magkano)\b", re.I)
 
 
+def has_question_word(question):
+    """True if the text carries a question word in either language."""
+    return bool(_ANY_QUESTION_WORD.search(question or ""))
+
+
 def question_kind(question):
     q = question or ""
     # The earliest question word wins, so "What year" beats a later "how".

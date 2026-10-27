@@ -17,6 +17,7 @@ import os
 import random
 import time
 from typing import List, Optional
+from itertools import zip_longest
 import re
 
 # from dotenv import load_dotenv
@@ -82,7 +83,7 @@ print("SEALION Model loaded successfully!")
 
 # Load T5 Model
 from qg_format import qg_input, qa_input, detect_lang
-from qselect import rank_questions
+from qselect import rank_questions, has_question_word
 from quizrules import check_item, label_for
 
 T5_MODEL_NAME = os.getenv("QG_MODEL", "Aiken1016/MT5_Second_model")  # fix the username if different
@@ -96,6 +97,9 @@ QUIZ_MAX_QUESTIONS = int(os.getenv("QUIZ_MAX_QUESTIONS", "10"))
 # whole quiz ran out of tokens as the count grew, and a single bad brace lost
 # every question instead of one chunk.
 QUIZ_OPTION_CHUNK = int(os.getenv("QUIZ_OPTION_CHUNK", "3"))
+# Spare questions built past n, to absorb the drops. Each costs one more mT5 pass,
+# so the cushion is small on purpose.
+QUIZ_EXTRA = max(0, int(os.getenv("QUIZ_EXTRA", "2")))
 # When mT5 cannot word a question, let SEA-LION write it rather than fail the
 # whole quiz. Each question still records which model wrote it. QG_FALLBACK=0
 # restores the old behaviour, for a run that must be mT5 only.
@@ -118,6 +122,44 @@ def _qg_generate(prompt: str, **gen_kwargs) -> str:
     with torch.inference_mode():
         out = qg_model.generate(**inputs, max_new_tokens=48, num_beams=4, use_cache=True, **gen_kwargs)
     return qg_tokenizer.decode(out[0], skip_special_tokens=True).strip()
+
+def qg_self_check():
+    """Run one known sentence through mT5 at startup and say so if the output is noise.
+
+    A mis-loaded mT5 raises nothing. It samples near-randomly over a 250k vocabulary,
+    the question checks drop every candidate, and the SEA-LION fallback covers for it,
+    so the app looks fine while the question generator contributes nothing.
+    """
+    passage = "Ana planted a mango tree in the garden behind her house."
+    try:
+        out = _qg_generate(qg_input("Ana", passage, "en"), no_repeat_ngram_size=3)
+    except Exception as e:
+        print(f"[mT5] Self-check could not run: {e}")
+        return
+    letters = [c for c in out if c.isalpha()]
+    foreign = sum(1 for c in letters if ord(c) > 0x24F)
+    # Latin ends at U+024F. A model that lost its output projection samples across
+    # the whole vocabulary, so a Latin-script prompt comes back in mixed scripts.
+    noise = not letters or foreign > len(letters) / 4 or "<extra_id_" in out
+    if noise or not has_question_word(out) or not out.rstrip().endswith("?"):
+        print("=" * 70)
+        print("[mT5] WARNING: the question generator is not producing questions.")
+        print(f"[mT5] It was asked about 'Ana' and returned: {out!r}")
+        if noise:
+            print("[mT5] The output is mostly non-Latin characters, which means the")
+            print("[mT5] trained output projection was not loaded. Check that the")
+            print("[mT5] model is loaded with tie_word_embeddings=False, and that")
+            print(f"[mT5] QG_MODEL ({T5_MODEL_NAME}) is the checkpoint you meant.")
+        else:
+            print("[mT5] Quizzes will fall back to SEA-LION for every question.")
+        print("=" * 70)
+    else:
+        print(f"[mT5] Self-check passed: {out!r}")
+
+
+if os.getenv("QG_SELF_CHECK", "1") != "0":
+    qg_self_check()
+
 
 def make_question(answer, passage, lang):
     return _qg_generate(qg_input(answer, passage, lang), no_repeat_ngram_size=3, early_stopping=True)
@@ -857,6 +899,11 @@ class QuizAsk(BaseModel):
     text: str
     goal: Optional[str] = None
     n: int = 3
+    # Both screens have always sent these two. Pydantic drops anything it does
+    # not declare, so until now the "what kind of questions" choice did nothing
+    # and the answer choices ignored the language setting the screen promises.
+    kinds: Optional[str] = None       # "mixed" | "literal" | "inferential"
+    language: Optional[str] = None    # "en" | "fil", or None to follow the passage
 
 QUIZ_RULES = """You write JSON-formatted reading-comprehension multiple choice questions.
 You MUST output valid JSON matching this schema exactly:
@@ -1008,6 +1055,13 @@ _FUNCTION_WORDS = {"the", "a", "an", "of", "to", "in", "on", "at", "by", "for", 
                    "ang", "ng", "sa", "na", "at", "ay", "mga", "si", "ni", "kay", "para", "o", "pero"}
 _BAD_START_WORDS = {"of", "to", "in", "on", "by", "for", "with", "from", "and", "or", "but", "that",
                     "which", "who", "as", "is", "was", "were", "are", "na", "ay", "ng", "pero"}
+# An inferential target is the evidence a conclusion is drawn from, not the answer, and the
+# evidence for "why" or "how" is usually a phrase headed by a preposition: "by hand",
+# "with water from the rainforests", "sa pamamagitan ng kamay". Rejecting those for their
+# first word cost inferential questions in English, where the preposition carries the
+# meaning. "of" stays out: it almost always marks a phrase cut off from the noun it modified.
+_MANNER_START = {"by", "with", "through", "from", "in", "on", "at", "for", "to",
+                 "sa", "gamit", "dahil", "para"}
 _OF_PHRASE = re.compile(r"\s+of\s+(?:(?:the|a|an|his|her|their|its|my|our|your)\s+)?[\w'’-]+", re.I)
 
 _NUMBER_WORD = re.compile(
@@ -1055,15 +1109,22 @@ def question_fits_answer(question, answer):
         return True
     return bool(_QUANTITY_QUESTION.search(question))
 
-def target_problem(answer, max_words):
+def target_problem(answer, max_words, kind="Literal"):
     """Why an answer phrase is a poor quiz target, or None if it is fine."""
     if looks_like_list(answer):
         return "target is a list or fragment"
     if len(answer.split()) > max_words:
         return f"answer longer than {max_words} words"
     words = [w.casefold() for w in re.findall(r"[\w'’-]+", answer)]
-    if words and (words[-1] in _FUNCTION_WORDS or words[0] in _BAD_START_WORDS):
-        return "target starts or ends with a function word"
+    if not words:
+        return None
+    # A trailing function word always means the phrase was cut short.
+    if words[-1] in _FUNCTION_WORDS:
+        return "target ends with a function word"
+    if words[0] in _BAD_START_WORDS:
+        manner = kind.strip().lower() == "inferential" and words[0] in _MANNER_START
+        if not manner or len(words) < 2:
+            return "target starts with a function word"
     return None
 
 def _first_usable_question(answer, passage, lang, used_questions):
@@ -1319,9 +1380,21 @@ def generate_quiz(ask: QuizAsk) -> list:
     if not passage:
         raise ValueError("The passage cannot be empty.")
     
+    # The questions themselves follow the passage, which is what the screen says.
     lang = detect_lang(passage)
     max_words = MAX_ANSWER_WORDS.get(lang, 8)
-    why_language = "Filipino" if lang == "fil" else "English"
+    # The explanations follow the student's language setting when they chose one,
+    # and the passage otherwise. The options stay anchored to passage spans by
+    # option_matches_span, so they cannot follow a different language.
+    why_lang = (ask.language or "").strip().lower() or lang
+    why_language = "Filipino" if why_lang == "fil" else "English"
+    mix_rule = {
+        "literal": "- Select only literal targets. Do not select an inferential one.",
+        "inferential": "- Prefer inferential targets. Select a literal one only where the\n"
+                       "  passage supports nothing else.",
+    }.get((ask.kinds or "").strip().lower(),
+          "- Select approximately half literal and half inferential targets.\n"
+          "- Include at least one inferential target whenever the passage supports it.")
     _clock = [time.perf_counter(), time.perf_counter()]   # [last lap, start]
 
     def lap(label):
@@ -1339,8 +1412,7 @@ Read the passage and select exactly {n_targets} DISTINCT answer targets for a
 reading-comprehension quiz.
 
 QUESTION MIX:
-- Select approximately half literal and half inferential targets.
-- Include at least one inferential target whenever the passage supports it.
+{mix_rule}
 
 LITERAL:
 - The answer is directly stated in the passage.
@@ -1407,12 +1479,16 @@ Passage:
         )
 
     # STEP 2: Use T5 to generate the actual question wording.
+    # More questions than asked for, because the option and giveaway checks drop
+    # some. Step 1 already asks for spare targets, but step 2 stopped at exactly n,
+    # so a late drop left the student short of what they picked.
+    build_up_to = min(n + QUIZ_EXTRA, n_targets)
     generated = []
     used_questions = set()
     used_answers = set()
 
     for item in answer_items:
-        if len(generated) >= n:
+        if len(generated) >= build_up_to:
             break
 
         answer = str(item.get("answer", "")).strip()
@@ -1421,7 +1497,7 @@ Passage:
         if not answer:
             continue
 
-        problem = target_problem(answer, max_words)
+        problem = target_problem(answer, max_words, kind)
         if problem == "target is a list or fragment":
             print(f"[Quiz] Skipped ({problem}): {answer}")
             continue
@@ -1437,7 +1513,7 @@ Passage:
             print(f"[Quiz] Skipped (target already used): {exact_answer}")
             continue
 
-        problem = target_problem(exact_answer, max_words)
+        problem = target_problem(exact_answer, max_words, kind)
         if problem:
             print(f"[Quiz] Skipped ({problem}): {exact_answer}")
             continue
@@ -1489,7 +1565,8 @@ Passage:
         left = [i for i in answer_items
                 if str(i.get("answer", "")).strip()
                 and str(i.get("answer", "")).strip().lower() not in done
-                and not target_problem(str(i.get("answer", "")).strip(), max_words)]
+                and not target_problem(str(i.get("answer", "")).strip(), max_words,
+                                       str(i.get("kind", "Literal")))]
         if left:
             made = sealion_questions(passage, left[: n - len(generated)])
             kept_n = 0
@@ -1598,9 +1675,22 @@ Passage:
         correct_option = str(support.get("correct_option", "")).strip()
         distractors = support.get("distractors", [])
 
-        # The keyed answer must still say what mT5 verified, otherwise the "why" and the
-        # evidence may explain a different answer.
-        if not option_matches_span(correct_option, correct_text):
+        # The kind decided in step 1 was judged against an answer phrase, before this
+        # question existed. Judge it from the finished question instead, and do it here
+        # because it decides which check the keyed answer has to pass. Against
+        # correct_text, the verified passage span, not correct_option: the options prompt
+        # tells SEA-LION to reword the answer concisely, so a reworded option is not in
+        # the passage and that used to stamp literal items Inferential.
+        kind_now = label_for(item["q"], correct_text, passage)
+        if kind_now != item["kind"]:
+            print(f"[Quiz] Relabelled {item['kind']} -> {kind_now}: {item['q']}")
+
+        # For a literal question the keyed answer must still say what mT5 verified,
+        # otherwise the "why" and the evidence may explain a different answer. An
+        # inferential answer is a conclusion drawn from the verified detail rather than
+        # its words, so this check would delete every inferential item. Those are tied
+        # to the passage at the evidence check below instead.
+        if kind_now == "Literal" and not option_matches_span(correct_option, correct_text):
             print(f"[Quiz] Rejected: option '{correct_option}' drifted from verified answer "
                   f"'{correct_text}' for: {item['q']}")
             continue
@@ -1619,12 +1709,18 @@ Passage:
             print(f"[Quiz] Rejected empty option for: {item['q']}")
             continue
 
-        distractors = clean_distractors(distractors, correct_option, correct_text)
+        # Both checks below measure a distractor against the verified span. For an
+        # inferential item that span is the evidence detail, not the answer, so a good
+        # distractor is a wrong conclusion drawn from the same detail: measuring it
+        # against the span threw those away. Measure against the keyed answer instead.
+        span_ref = correct_text if kind_now == "Literal" else ""
+        distractors = clean_distractors(distractors, correct_option, span_ref)
         if len(distractors) != 3:
             print(f"[Quiz] Rejected: a distractor repeated or overlapped the answer for: {item['q']}")
             continue
 
-        clash = distractor_in_answer_sentence(distractors, passage, correct_text) if SAME_SENTENCE_CHECK else None
+        clash = (distractor_in_answer_sentence(distractors, passage, correct_text)
+                 if SAME_SENTENCE_CHECK and kind_now == "Literal" else None)
         if clash:
             print(f"[Quiz] Rejected: distractor '{clash}' is in the same passage sentence as the answer "
                   f"'{correct_text}', so it may also be correct: {item['q']}")
@@ -1716,6 +1812,14 @@ Passage:
             print(f"[Quiz] Evidence: {evidence}")
             continue
         evidence = found   # the passage's own wording, not the model's copy of it
+
+        # An inferential answer is not checked against the verified span above, so it is
+        # checked here: the evidence quote must contain that span, which keeps the
+        # conclusion tied to the detail mT5 confirmed rather than to the whole passage.
+        if kind_now == "Inferential" and not _contains(_cmp(correct_text), _cmp(evidence)):
+            print(f"[Quiz] Rejected: the evidence does not contain the verified detail "
+                  f"'{correct_text}' for: {item['q']}")
+            continue
         if not _contains(_cmp(correct_text), _cmp(evidence)):
             sents = sentences_with(passage, correct_text)
             if not sents:
@@ -1752,12 +1856,6 @@ Passage:
             print(f"[Quiz] Rejected, the answer gives itself away {flaws}: {item['q']}")
             continue
 
-        # The kind was decided in step 1 against an answer phrase, before this
-        # question existed. Judge it from the finished question instead.
-        kind_now = label_for(item["q"], correct_option, passage)
-        if kind_now != item["kind"]:
-            print(f"[Quiz] Relabelled {item['kind']} -> {kind_now}: {item['q']}")
-
         cleaned.append({
             "kind": kind_now,
             "q": item["q"],
@@ -1783,6 +1881,19 @@ Passage:
             "No valid quiz questions survived validation. "
             "Check the backend terminal for DEBUG output."
         )
+
+    # Trim the cushion back to n, preferring the kind the student asked for.
+    want = (ask.kinds or "").strip().lower()
+    lit = [c for c in cleaned if c["kind"] == "Literal"]
+    inf = [c for c in cleaned if c["kind"] == "Inferential"]
+    if want == "literal":
+        ordered = lit + inf
+    elif want == "inferential":
+        ordered = inf + lit
+    else:
+        ordered = [q for pair in zip_longest(lit, inf) for q in pair if q]
+    cleaned = ordered[:n]
+    print(f"[Quiz] Returning {len(cleaned)} of {len(ordered)} for kinds={want or 'mixed'}, n={n}")
 
     print(f"[Quiz][time] TOTAL: {time.perf_counter() - _clock[1]:.1f}s")
     return cleaned
