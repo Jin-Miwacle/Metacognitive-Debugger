@@ -102,8 +102,13 @@ QUIZ_OPTION_CHUNK = int(os.getenv("QUIZ_OPTION_CHUNK", "3"))
 QG_FALLBACK = os.getenv("QG_FALLBACK", "1") != "0"
 
 print(f"Loading mT5 question-generation model: {T5_MODEL_NAME}...")
-qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
-qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+# The saved tokenizer_config lists extra_special_tokens as a list, which older
+# transformers cannot read; the tokens are already in tokenizer.json.
+qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
+# config.json says tie_word_embeddings=true, but the checkpoint has its own
+# trained lm_head. Tying would overwrite it with the input embeddings and the
+# model writes nonsense, so every question fails the round-trip check.
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME, tie_word_embeddings=False)
 qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
 qg_model.to(qg_device).eval()
 

@@ -87,8 +87,8 @@ T5_MODEL_NAME = os.getenv("QG_MODEL", "Aiken1016/MT5_Second_model")  # fix the u
 QG_CHECK_ANSWER = os.getenv("QG_CHECK_ANSWER", "1") != "0"
 
 print(f"Loading mT5 question-generation model: {T5_MODEL_NAME}...")
-qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME)
-qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME)
+qg_tokenizer = AutoTokenizer.from_pretrained(T5_MODEL_NAME, extra_special_tokens={})
+qg_model = AutoModelForSeq2SeqLM.from_pretrained(T5_MODEL_NAME, tie_word_embeddings=False)
 qg_device = torch.device(os.getenv("QG_DEVICE", "cpu"))
 qg_model.to(qg_device).eval()
 

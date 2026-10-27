@@ -6,8 +6,8 @@ from qg_format import qg_input, qa_input, detect_lang
 MODEL_NAME = "MT5_Second_model"   # your OUTPUT_DIR or the HF repo id
 SRC_LEN = 768                     # same as train_mt5.py
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).eval()
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, extra_special_tokens={})
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, tie_word_embeddings=False).eval()
 
 def _gen(prompt, max_new_tokens=64):
     x = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=SRC_LEN)

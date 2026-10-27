@@ -77,11 +77,11 @@ def load_model():
     import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     try:
-        tok = AutoTokenizer.from_pretrained(MODEL)
+        tok = AutoTokenizer.from_pretrained(MODEL, extra_special_tokens={})
     except Exception:
         print("tokenizer not found with the model, using google/mt5-small (same vocab)")
         tok = AutoTokenizer.from_pretrained("google/mt5-small")
-    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL, tie_word_embeddings=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
     print(f"model={MODEL} device={device}")
