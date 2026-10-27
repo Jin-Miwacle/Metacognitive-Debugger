@@ -28,6 +28,8 @@ from peft import PeftModel
 import contextlib
 import threading
 
+import grounding as gr  # rule-based checks against the passage (see GROUNDING_RULES_README.md)
+
 
 # Load SEALION Model
 SEALION_MODEL_NAME = os.getenv("SEALION_MODEL", "aisingapore/Gemma-SEA-LION-v3-9B-IT")
@@ -166,11 +168,13 @@ class Turn(BaseModel):
     mode: Optional[str] = None 
 
 class Ask(BaseModel):
-    mode: str = "debug"            # from the widget: "debug", "followup", "stuck" (button) or "giveup"
+    mode: str = "debug"            # from the widget: "debug", "followup", "stuck" (button) or "explain";
+                                   # "giveup" is accepted but the backend decides that itself (should_give_up)
     problem: Optional[str] = None  # "vocab", "lost", "connect", "why", or "other" (typed by the student)
     problem_text: Optional[str] = None  # the student's own description, set when problem == "other"
     passage: str = ""              # words selected
     paragraph: str = ""            # paragraph around it
+    full_text: str = ""            # the whole reading; the grounding rules check against this
     goal: Optional[str] = None     # reading goal
     goal_hint: Optional[str] = None  # a word shared by the selection and the goal (widget's keyword check)
     message: Optional[str] = None  # student latest reply
@@ -187,6 +191,8 @@ General Rules:
 - Keep your response under 45 words.
 - Never use stock praise like "Good job."
 - Never invent facts, characters, or plot points outside of the provided context.
+- Never ask the student to say something "in your own words" or to repeat an explanation back to you.
+- Never use analogies, metaphors, comparisons or examples from outside the text (no "it's like when you...", no "imagine...", no "have you ever..."). Talk only about what the text says.
 - Use plain, easy-to-understand words."""
 
 CLASSIFIER_RULES = """You are an intent classifier for a reading coach. You get the target word/passage, the coach's last message, and the student's reply.
@@ -250,7 +256,8 @@ def stuck_level(ask):
 
 _PROMPT_LEAK = re.compile(
     r"(<start_of_turn>|<end_of_turn>|^\s*(user|model|assistant)\s*$|Context paragraph:|"
-    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal( \(the student's own words\))?:)",
+    r"Instruction for this turn:|Student's latest reply:|Language for your reply:|Reading goal( \(the student's own words\))?:|"
+    r"Key sentences from the text)",
     re.I | re.M,
 )
  
@@ -284,7 +291,7 @@ def classify_intent(message, target_passage="", last_coach=""):
     return "followup"
 
 _QUESTION_BY_PROBLEM = {
-    "vocab":   "ONE simple question to help them figure out what \"{p}\" means using context or everyday experience.",
+    "vocab":   "ONE simple question to help them figure out what \"{p}\" means using the words around it in the text.",
     "lost":    "ONE simple question about what is happening here.",
     "connect": "ONE simple question pointing back to the sentence right before it.",
     "why":     "ONE simple question to look for an earlier clue in the text.",
@@ -292,7 +299,46 @@ _QUESTION_BY_PROBLEM = {
 
 def _full_explanation(p):
     return (f"The student has been stuck several times. Now explain \"{p}\" clearly and simply using "
-            f"the context, with one everyday example. End by asking them to say it in their own words.")
+            f"the context only, with no analogy or outside example. Do NOT ask them to repeat or restate it. End with "
+            f"one short, friendly line inviting them to keep reading.")
+
+def _re_explanation(p, before):
+    return (f"You already explained \"{p}\" like this: \"{before[:300]}\". The student is still confused, so "
+            f"explain it again in a DIFFERENT way: do NOT reuse those sentences. Use shorter sentences and "
+            f"simpler words, and quote the exact words from the text that show it. Use the context only, with "
+            f"no analogy or outside example. Do NOT ask them to repeat or restate it. End with one short, "
+            f"friendly line inviting them to keep reading.")
+
+def earlier_explanations(ask):
+    return [t.text for t in ask.history if t.role == "coach" and t.mode == "giveup"]
+
+def repeats_earlier(reply, earlier):
+    # Near-copies count too: most of the words the same as an earlier explanation.
+    words = set(gr._words(reply))
+    for e in earlier:
+        old = set(gr._words(e))
+        if words and old and len(words & old) / len(words | old) >= 0.7:
+            return True
+    return False
+
+_RE_EXPLAIN_FALLBACK = {
+    "en": "Let's look at the exact words in the text again: \"{quote}\" Read that sentence slowly. "
+          "Keep reading, and highlight anything else that's confusing.",
+    "fil": "Balikan natin ang eksaktong salita sa teksto: \"{quote}\" Basahin mo ito nang dahan-dahan. "
+           "Magpatuloy sa pagbasa, at i-highlight ang anumang nakalilito pa.",
+}
+
+def re_explain_fallback(ask, lang, g):
+    # Built from the text itself, quoting a sentence not quoted before, so it doesn't repeat either.
+    sents = gr.split_sentences(ask.paragraph or "")
+    ids = gr.selection_ids(sents, ask.passage or "")
+    picks = list(g.evidence if g is not None else []) + [sents[i - 1] for i in ids] + sents
+    replies = [_RE_EXPLAIN_FALLBACK[lang].format(quote=gr._short_quote(s, 20)) for s in picks]
+    said = {t.text for t in ask.history if t.role == "coach"}
+    fresh = [r for r in replies if r not in said]
+    if fresh:
+        return fresh[0]
+    return replies[0] if replies else _KEEP_READING[lang]
 
 def goal_instruction(ask):
     if not ask.goal or ask.mode in ("repeat", "stuck"):
@@ -326,7 +372,7 @@ def mode_instruction(ask):
 
 def _mode_instruction(ask, p, question):
     if ask.mode == "success":
-        return (f"The student has understood \"{p}\". Confirm they are right in your own words, "
+        return (f"The student has understood \"{p}\". Confirm they are right, "
                 f"restate the meaning in ONE short sentence using the context, and tell them they "
                 f"are ready to move on to more passages. Do NOT ask any question.")
     if ask.mode == "stuck":
@@ -340,7 +386,14 @@ def _mode_instruction(ask, p, question):
                     f"idea behind \"{p}\" using the context, then ask the student to finish the idea.")
         return _full_explanation(p)
     if ask.mode == "giveup":
+        before = earlier_explanations(ask)
+        if before:
+            return _re_explanation(p, before[-1])
         return _full_explanation(p)
+    if ask.mode == "explain":
+        return (f"Explain \"{p}\" in 2 to 4 short sentences at a Grade 7 level, using only the context and "
+                f"key sentences given. If the text doesn't say something, say \"the text doesn't say\". Do NOT "
+                f"ask them to repeat or restate it; end with one short line inviting them to keep reading.")
     if ask.mode == "repeat":
         return "The student asked you to change language. Repeat your last question in that language. Nothing else."
     if ask.mode == "followup":
@@ -348,7 +401,10 @@ def _mode_instruction(ask, p, question):
                 f"then ask {question}")
     return f"Ask the student {question}"
  
-def build_hint_prompt(ask, lang):
+def explaining(ask):
+    return ask.mode in ("explain", "giveup") or (ask.mode == "stuck" and stuck_level(ask) >= 3)
+
+def build_hint_prompt(ask, lang, g=None, retry_note=""):
     passage = ask.passage or "this part"
     lines = []
     if ask.goal:
@@ -358,32 +414,322 @@ def build_hint_prompt(ask, lang):
     else:
         lines.append(f"Context: None provided. Treat '{passage}' as a general vocabulary term "
                      f"without inventing external characters or plot points.")
+    if g is not None and g.evidence:
+        lines.append("Key sentences from the text (quote only these, word for word; the student cannot see this "
+                     "list, so say \"the text\", never \"the key sentence\"):\n"
+                     + "\n".join(f"- {s}" for s in g.evidence))
     lines.append(f"The student is working on: \"{passage}\".")
     if ask.message:
         lines.append(f"Student's latest reply: \"{ask.message[:300]}\"")
     lines.append(f"Language for your reply: {'English' if lang == 'en' else 'Filipino (natural Taglish is OK)'}")
-    lines.append(f"\nInstruction for this turn: {mode_instruction(ask)}")
+    instruction = mode_instruction(ask)
+    branch = gr.branch_instruction(g, explaining(ask)) if g is not None else ""
+    lines.append(f"\nInstruction for this turn: {instruction}" + (f" {branch}" if branch else ""))
+    if retry_note:
+        lines.append(retry_note)
     lines.append("\nOutput ONLY your single spoken response as the coach.")
     return "\n".join(lines)
- 
+
 SUCCESS_FALLBACK = {
     "en":  "That's right! You've figured out what \"{p}\" means. You're ready to move on to more passages.",
     "fil": "Tama! Nakuha mo na ang ibig sabihin ng \"{p}\". Handa ka nang magpatuloy sa susunod na babasahin.",
 }
- 
-def generate_hint(ask):
-    lang = pick_language(ask)
-    prompt = build_hint_prompt(ask, lang)
-    temperature = 0.3 if ask.mode in ("success", "repeat") else 0.7
-    raw_response = ask_sealion(COACH_RULES, prompt, history=ask.history, temperature=temperature, max_tokens=150)
-    reply = clean_reply(raw_response)
- 
+
+# ---- Grounding rules (Backend/grounding.py). GROUNDING_RULES=0 turns R1-R5 off for comparison runs.
+def grounding_on():
+    return os.getenv("GROUNDING_RULES", "1") != "0"
+
+def rules_passage(ask):
+    # The whole reading when the widget sends it; older widgets only send the paragraph.
+    return (ask.full_text or ask.paragraph or "")[:20000]
+
+def student_question(ask):
+    if ask.message:
+        return ask.message
+    return (problem_said(ask) or "") if ask.mode == "debug" else ""
+
+def run_grounding(ask):
+    """R0-R3 for this turn, or None when the rules are off or the turn needs none."""
+    # "success" is checked too: the classifier can call a wrong answer a success.
+    if not grounding_on() or ask.mode == "repeat":
+        return None
+    earlier = [problem_said(ask) or ""] + [t.text for t in ask.history if t.role == "student"]
+    g = gr.ground(ask_sealion, question=student_question(ask), passage=rules_passage(ask),
+                  selection=ask.passage, problem=ask.problem, mode=ask.mode,
+                  full_passage=bool(ask.full_text), earlier=earlier,
+                  coach_line=last_coach_line(ask), claim_check=True)
+    print(g.log_line())
+    for note in g.notes:
+        print(f"    {note}")
+    return g
+
+_GROUNDING_RETRY = ("\nImportant: use only names, numbers and quotes that appear in the text, copied word for "
+                    "word, and do not change the spelling of any word from the text.")
+_HEDGE_RETRY = (" Make clear this is a clue, not something the text says directly (use words like \"might\" "
+                "or \"seems\").")
+_REPEAT_RETRY = ("\nImportant: your last answer repeated your earlier explanation almost word for word. Write a "
+                 "new explanation with different sentences.")
+_AGREED_RETRY =" The text says something different from what the student said, so do NOT start by agreeing."
+_NOTHING_RETRY = (" The student did not actually answer, so do NOT tell them they are right. "
+                  "Point them back to the text and ask again.")
+_OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your answer must be about \"{p}\". "
+                     "Do not explain any other word or name from that sentence.")
+_QUESTION_RETRY = (" End with ONE question for the student. Do NOT state the answer or explain it "
+                   "outright: your job this turn is to help them work it out.")
+_LANG_RETRY = {"en": " Write your whole reply in English.",
+               "fil": " Isulat ang buong sagot mo sa Filipino."}
+_REPEAT_ANY_RETRY = ("\nImportant: you already said something very close to this earlier in this "
+                     "conversation. Say something different, about a different part of the text.")
+
+
+def style_note(problems, lang="en"):
+    """The retry wording for R8, R9 and R10."""
+    note = ""
+    if "R8:no_question" in problems:
+        note += _QUESTION_RETRY
+    if "R9:wrong_language" in problems:
+        note += _LANG_RETRY.get(lang, _LANG_RETRY["en"])
+    if "R10:repeats" in problems:
+        note += _REPEAT_ANY_RETRY
+    return note
+_NOT_STATED_RETRY = (" Start by saying plainly that the text doesn't say this (in Filipino: \"Hindi sinabi ng "
+                     "teksto...\").")
+
+def wants_question(ask):
+    """Turns whose job is to ask rather than tell. Explaining turns and a
+    confirmed success are meant to have no question, so they are left out."""
+    return not explaining(ask) and ask.mode not in ("success", "repeat")
+
+
+def style_problems(ask, reply):
+    """R8, R9 and R10. These judge the reply as a coaching turn, not against
+    the passage, so they run even when the passage rules are switched off."""
+    problems = []
+    if wants_question(ask) and not gr.asks_question(reply):
+        problems.append("R8:no_question")
+    if gr.wrong_language(reply, pick_language(ask)):
+        problems.append("R9:wrong_language")
+    earlier_coach = [t.text for t in ask.history if t.role == "coach" and t.text]
+    if gr.repeats_any(reply, earlier_coach):
+        problems.append("R10:repeats")
+    return problems
+
+
+def reply_problems(ask, reply, g):
+    """R5 for every reply, plus R4 for INFERABLE ones and the "say it's not stated" check for NOT_STATED."""
+    problems = gr.check_reply(reply, rules_passage(ask), ask.message or "", ask.history, ask.passage)
+    if g is not None and g.label == gr.INFERABLE and not gr.is_meaning(g) and not gr.is_hedged(reply):
+        problems.append("R4:unhedged")
+    if g is not None and g.label == gr.NOT_STATED and not gr.says_not_stated(reply):
+        problems.append("NOT_STATED:not_said")
+    if g is not None and g.label == gr.CONTRADICTED and gr.agrees(reply):
+        problems.append("R6:agreed")
+    # Saying "Tama" to something that was not an answer at all. The student
+    # asked a question back, or said "ok", and the coach confirmed it as
+    # correct, which is how a wrong answer gets marked right.
+    if g is not None and g.claim == "NO_CLAIM" and gr.agrees(reply):
+        problems.append("R6:agreed_nothing")
+    # R11. On a turn whose job is the selected words themselves, a reply that
+    # drops them and explains a neighbouring name instead is off target.
+    if on_the_selection(ask):
+        problems += ["R11:" + p for p in gr.off_target(reply, ask.passage, rules_passage(ask))]
+    return problems
+
+
+def on_the_selection(ask):
+    """Turns that are about the selected words, not the passage around them: a
+    vocabulary question, and any turn that has to explain the selection outright."""
+    if ask.problem in ("vocab", "word"):
+        return True
+    return explaining(ask) or ask.mode == "success"
+
+# "Say it in your own words" reads as a test and confuses students; the adapter sometimes adds it anyway.
+_RESTATE_REQUEST = re.compile(
+    r"[^.?!]*\b(own words|sariling (mga )?(salita|pananalita)|restate|say it back|explain it back"
+    r"|read (that|it|the sentence|this)[^.?!]* (out loud|aloud)|basahin mo[^.?!]* (nang |ng )?malakas"
+    r"|repeat (that|it|after me)|ulitin mo)\b[^.?!]*[.?!]?\s*",
+    re.I)
+
+# "The key sentence says..." refers to a list in the prompt that the student never sees.
+_KEY_SENTENCE = re.compile(r"\b(the\s+)?(first|second|third|last|other\s+)?\s*key\s+sentences?\b", re.I)
+
+def name_the_text(reply):
+    def fix(m):
+        return "The text" if m.group(0)[0].isupper() else "the text"
+    return _KEY_SENTENCE.sub(fix, reply)
+
+def drop_restate_requests(reply):
+    trimmed = _RESTATE_REQUEST.sub("", reply).strip()
+    return trimmed or reply
+
+# Analogies and outside examples ("it's like when you carry your lunchbox") confuse students more
+# than they help, and the adapter adds them even when told not to.
+_ANALOGY = re.compile(
+    r"\b(like when|like how|just like|kind of like|sort of like|imagine|think of it|have you ever|"
+    r"for example|for instance|similar to|the same way|parang (kapag|kung|noong|ikaw|tayo)|"
+    r"katulad (ng|nang) kapag|tulad (ng|nang) kapag|halimbawa|isipin mo|naranasan mo na)\b"
+    r"|^\W*(like|parang)\b", re.I)
+
+def _without_analogy(sentence):
+    m = _ANALOGY.search(sentence)
+    if not m:
+        return sentence
+    # "Mandy held the eggs, like when you carry your lunchbox." keeps "Mandy held the eggs."
+    head = re.split(r"\s*[,;—–-]\s*(?:\w+\s+){0,2}$", sentence[:m.start()])[0].rstrip(" ,;—–-")
+    if head != sentence[:m.start()].rstrip() and len(head.split()) >= 3:
+        return head + "."
+    return ""
+
+def drop_analogies(reply):
+    sents = gr.split_sentences(reply)
+    kept = [k for k in (_without_analogy(s) for s in sents) if k]
+    if kept == sents:
+        return reply
+    print(f"[rules] removed analogies: {reply!r} -> {kept}")
+    return " ".join(kept)
+
+_KEEP_READING = {"en": "Keep reading, and highlight anything else that's confusing.",
+                 "fil": "Magpatuloy sa pagbasa, at i-highlight ang anumang nakalilito pa."}
+
+def drop_trailing_questions(reply, lang):
+    # A full explanation that ends on a new question restarts the hint ladder it was meant to end.
+    sents = gr.split_sentences(reply)
+    kept = list(sents)
+    while kept and kept[-1].rstrip().endswith("?"):
+        kept.pop()
+    if not kept or len(kept) == len(sents):
+        return reply
+    return " ".join(kept + [_KEEP_READING[lang]])
+
+def _generate_reply(ask, prompt, lang, temperature):
+    # Explain mode states the answer, which the Socratic adapter is trained not to do.
+    raw_response = ask_sealion(COACH_RULES, prompt, history=ask.history, temperature=temperature,
+                               max_tokens=150, use_adapter=ask.mode != "explain")
+    reply = name_the_text(drop_analogies(drop_restate_requests(clean_reply(raw_response))))
+    if explaining(ask):
+        reply = drop_trailing_questions(reply, lang)
+
     if ask.mode == "success" and "?" in reply:
         reply = SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part")
     if not reply:
         reply = ("Let's look at that part of the text again. What do you notice?" if lang == "en"
                  else "Balikan natin ang bahaging iyon ng teksto. Ano ang napapansin mo?")
     return reply
+
+_CLOSING = re.compile(r"\b(keep (reading|going)|highlight|magpatuloy|try the next sentence)\b", re.I)
+
+def usable(ask, kept):
+    """What's left after R7 still does the turn's job: something besides a closing line, and for a
+    hint, a question (a hint whose only question was off-text has nothing to ask)."""
+    sents = [s for s in gr.split_sentences(kept) if not _CLOSING.search(s)]
+    # At least one line has to be about the text ("That's a lot for one person!" alone explains nothing).
+    passage = gr.split_sentences(rules_passage(ask))
+    if not any(gr._term_in(t, p) for s in sents for t in gr.key_terms(s) for p in passage):
+        return False
+    return ask.mode == "success" or explaining(ask) or any(s.rstrip().endswith("?") for s in sents)
+
+def fact_checked(ask, reply):
+    """R7, then the explanation's no-trailing-question rule again (removing a line can leave one last)."""
+    kept, invented = remove_invented(ask, reply)
+    if explaining(ask):
+        kept = drop_trailing_questions(kept, pick_language(ask))
+    return kept, invented
+
+def remove_invented(ask, reply):
+    """R7: drop the reply's statements about the story that the text doesn't back, and word the
+    guesses it gives clues for as guesses."""
+    invented, note, unhedged = gr.check_facts(ask_sealion, reply, gr.split_sentences(rules_passage(ask)),
+                                              ask.passage, student=ask.message or "")
+    print(f"[grounding] {note}")
+    if not invented and not unhedged:
+        return reply, []
+    if invented:
+        print(f"[grounding] removed invented details: {invented}")
+    if unhedged:
+        print(f"[grounding] worded as guesses: {unhedged}")
+    return gr.apply_fact_check(reply, invented, unhedged, pick_language(ask)), invented
+
+def generate_hint(ask, g=None):
+    lang = pick_language(ask)
+    reply, template = _checked_reply(ask, g, lang)
+    # FACT_CHECK=0 skips R7 (one extra model call per reply) while keeping the other rules.
+    if template or not grounding_on() or not rules_passage(ask) or os.getenv("FACT_CHECK", "1") == "0":
+        return reply
+    kept, invented = fact_checked(ask, reply)
+    if not invented:
+        return kept          # unchanged, or with its guesses now worded as guesses
+    if usable(ask, kept):
+        return kept
+    # Nothing but a closing line is left: try once more, told what not to say.
+    note = ("\nImportant: the text does NOT say or mention these things, so do not say or ask them: "
+            + " ".join(f"\"{s}\"" for s in invented) + " Only say and ask about what the key sentences and the "
+            "context paragraph say.")
+    print("[grounding] not enough left after removing invented details -> regenerating once")
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang, 0.3)
+    if not reply_problems(ask, reply, g):
+        kept, invented = fact_checked(ask, reply)
+        if usable(ask, kept):
+            return kept
+    print("[grounding] still invented -> fallback template")
+    if ask.mode == "success":
+        return SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part")
+    if explaining(ask):
+        return re_explain_fallback(ask, lang, g)
+    return gr.fallback_reply(g or gr.GroundingResult(), lang)
+
+def _checked_reply(ask, g, lang):
+    """The reply after R4-R6 and the repeat check, and whether it is a code-built template."""
+    temperature = 0.3 if ask.mode in ("success", "repeat") else 0.7
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g), lang, temperature)
+    before = earlier_explanations(ask) if ask.mode == "giveup" else []
+    if before and repeats_earlier(reply, before):
+        print(f"[rules] explanation repeats an earlier one -> regenerating once: {reply!r}")
+        reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=_REPEAT_RETRY), lang, 0.9)
+        if repeats_earlier(reply, before):
+            print(f"[rules] still repeating -> text-based fallback: {reply!r}")
+            return re_explain_fallback(ask, lang, g), True
+    style = style_problems(ask, reply)
+    if not grounding_on() or not rules_passage(ask):
+        if not style:
+            return reply, False
+        print(f"[rules] reply failed {style} -> regenerating once: {reply!r}")
+        reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=style_note(style, lang)), lang, 0.3)
+        if style_problems(ask, reply):
+            print(f"[rules] still failing -> fallback template: {reply!r}")
+            return gr.fallback_reply(g or gr.GroundingResult(), lang), True
+        return reply, False
+
+    problems = reply_problems(ask, reply, g) + style
+    if not problems:
+        return reply, False
+    bad_quotes = [p[len("quote:"):] for p in problems if p.startswith("quote:")]
+    if bad_quotes and len(bad_quotes) == len(problems):
+        # Only the quotation marks are wrong (the words aren't the text's). Removing them keeps a
+        # reply that may be fine; regenerating risks a worse one. R7 still checks what it says.
+        fixed = gr.unquote(reply, bad_quotes)
+        if not reply_problems(ask, fixed, g):
+            print(f"[grounding] quotes not from the text -> removed the quotation marks: {reply!r}")
+            return fixed, False
+    print(f"[grounding] reply failed {problems} -> regenerating once: {reply!r}")
+    note = (_GROUNDING_RETRY + (_HEDGE_RETRY if "R4:unhedged" in problems else "")
+            + (_NOT_STATED_RETRY if "NOT_STATED:not_said" in problems else "")
+            + (_AGREED_RETRY if "R6:agreed" in problems else "")
+            + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
+            + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
+               if any(p.startswith("R11:") for p in problems) else "")
+            + style_note(problems, lang))
+    reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang,
+                            0.3 if temperature > 0.3 else 0.0)
+    problems = reply_problems(ask, reply, g) + style_problems(ask, reply)
+    if [p for p in problems if p != "R4:unhedged"]:
+        print(f"[grounding] still failing {problems} -> fallback template: {reply!r}")
+        if ask.mode == "success":
+            return SUCCESS_FALLBACK[lang].format(p=ask.passage or "this part"), True
+        return gr.fallback_reply(g or gr.GroundingResult(), lang), True
+    if problems:
+        print("[grounding] still unhedged -> adding the INFERABLE hedge")
+        return gr.TEMPLATES[lang]["hedge"] + reply, False
+    return reply, False
 
 
 # =====================================================================
@@ -976,17 +1322,46 @@ def health():
         "endpoints": ["/partner", "/quiz", "/checkin"],
     }
 
+# After this many answers that did not show understanding, the coach explains outright.
+GIVEUP_AFTER = int(os.getenv("GIVEUP_AFTER", "3"))
+
+# "What do you mean?" and "huh?" are questions, but they say the student didn't understand.
+_CONFUSED = re.compile(
+    r"^\s*(huh|ha|what|ano|what do you mean|what does (that|it|this) mean|ano ang ibig mong sabihin|"
+    r"i (still )?(don'?t|do not) (get|understand)( it)?|(hindi|di) ko (gets|maintindihan|naiintindihan|alam))"
+    r"\s*[?!.]*\s*$", re.I)
+
+_ACK = re.compile(
+    r"^\s*(ok(ay)?|k|sige|oo|thanks?( you)?|thank u|ty|salamat( po)?|got it|i see|ah+|oh+|gets( ko)?)"
+    r"\s*[.!]*\s*$", re.I)
+
+def _is_answer(text):
+    # Questions back to the coach and "in English please" are not attempts at the answer,
+    # except a plain "I don't get it", which is the student saying they didn't understand.
+    if not text or language_request(text):
+        return False
+    return not gr.is_question(text) or bool(_CONFUSED.match(text))
+
+def should_give_up(ask):
+    """Explain outright once the student has made GIVEUP_AFTER real attempts, once per thread."""
+    if any(t.role == "coach" and t.mode == "giveup" for t in ask.history):
+        return False
+    if not _is_answer(ask.message):
+        return False
+    attempts = sum(1 for t in ask.history if t.role == "student" and _is_answer(t.text)) + 1
+    return attempts >= GIVEUP_AFTER
+
 def _fail(what: str, e: Exception):
     # The widget falls back to its offline demo if any of these fail.
     print(f"Error while {what}:", repr(e))
-    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Check the server window for details.")
+    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Try again in a moment, and tell whoever is running the backend if it keeps happening.")
 
 @app.post("/partner")
 def partner(ask: Ask):
     try:
         requested = ask.mode
-        if requested == "stuck":
-            ask.mode = "stuck"
+        if requested in ("stuck", "explain"):
+            ask.mode = requested
         elif not ask.message:
             ask.mode = "debug"
         elif language_request(ask.message) and len(ask.message.split()) <= 5:
@@ -994,11 +1369,39 @@ def partner(ask: Ask):
         else:
             ask.mode = classify_intent(ask.message, target_passage=ask.passage,
                                        last_coach=last_coach_line(ask))
-            if requested == "giveup" and ask.mode != "success":
+            # The backend decides when to explain outright; a "giveup" request from the widget
+            # (older widgets send it on the second reply, whatever it says) is not trusted.
+            if ask.mode in ("followup", "stuck") and should_give_up(ask):
                 ask.mode = "giveup"
- 
-        reply_text = generate_hint(ask)
- 
+        # The third time the student is stuck (typed or the button), explain outright. This catches
+        # "what do you mean?" turns, which should_give_up doesn't count as attempts.
+        # Once the coach has explained outright, being stuck again gets another explanation,
+        # not the hint ladder from the start.
+        gave_up = any(t.role == "coach" and t.mode == "giveup" for t in ask.history)
+        if ask.mode == "stuck" and (gave_up or stuck_level(ask) >= GIVEUP_AFTER):
+            ask.mode = "giveup"
+
+        g = run_grounding(ask)
+        if ask.mode == "success" and g is not None and (g.label == gr.CONTRADICTED or g.missing_names):
+            # The classifier called it understood, but the text says otherwise (R6) or the answer
+            # names someone the text never mentions: don't confirm it or close the thread.
+            print(f"[grounding] success overruled by {g.rule}")
+            ask.mode = "followup"
+        if gave_up and ask.mode == "followup" and _ACK.match(ask.message or ""):
+            # "ok" after the explanation: close the turn instead of asking a fresh question.
+            reply_text = _KEEP_READING[pick_language(ask)]
+        elif g is not None and (g.label == gr.NOT_IN_TEXT or g.missing_names):
+            # R1, plus the same answer for a name the student brought up while
+            # answering rather than asking. Both end at the same fixed template,
+            # with no model call. Without the second case, "Explain why
+            # Crisostomo Ibarra left" went to the model, which had no idea who
+            # that was and asked about something else entirely.
+            reply_text = gr.fallback_reply(g, pick_language(ask))
+            if ask.mode in ("stuck", "giveup") and requested != "stuck":
+                ask.mode = "followup"  # asking about a name is not a rung on the hint ladder
+        else:
+            reply_text = generate_hint(ask, g)
+
         print("\n" + "-" * 40)
         stuck_info = f" (level {stuck_level(ask)})" if ask.mode == "stuck" else ""
         print(f"[API REQUEST] /partner | Mode: {ask.mode}{stuck_info} | Problem: {ask.problem}")
@@ -1006,7 +1409,10 @@ def partner(ask: Ask):
               f" | Language: {pick_language(ask)} (setting: {ask.response_language!r})")
         print(f"[API RESPONSE]: {reply_text}")
         print("-" * 40)
-        return {"reply": reply_text, "mode": ask.mode}
+        response = {"reply": reply_text, "mode": ask.mode}
+        if g is not None:
+            response["grounding"] = {"label": g.label, "rule": g.rule, "evidence_ids": g.evidence_ids}
+        return response
     except Exception as e:
         print("Error in /partner:", repr(e))
         raise HTTPException(status_code=502, detail=str(e))

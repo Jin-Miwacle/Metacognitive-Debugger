@@ -4,5 +4,7 @@ const SUPABASE_ANON_KEY = "sb_publishable_eMH6cnljo2YhJaH2hrEzdA_qEQo0S2O";
 
 
 window.APP_CONFIG = {
-  API_BASE: "https://faced-pending-enjoy-bet.trycloudflare.com",
+  // Changes every time cloudflared restarts: copy the https://....trycloudflare.com
+  // address it prints (not the command), then commit and push to main.
+  API_BASE: "http://localhost:8000",
 };

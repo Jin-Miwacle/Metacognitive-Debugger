@@ -20,7 +20,7 @@
 
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="this.remove(); this.previousElementSibling.style.display='flex'" onload="this.previousElementSibling.style.display='none'"></span>
+        <span class="brand-mark" aria-hidden="true"><span class="brand-mark-fallback">R</span><img src="logo.png" alt="" onerror="var f=this.previousElementSibling; this.style.display='none'; if(f) f.style.display='flex'" onload="var f=this.previousElementSibling; if(f) f.style.display='none'"></span>
         Reading Partner
       </div>
       <nav class="sidebar-nav" aria-label="Main">

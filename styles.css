@@ -15,7 +15,7 @@
     --accent: #1f6f5c;
     --accent-ink: #ffffff;
     --accent-soft: #e2efe8;
-    --bug: #c1472c;
+    --bug: #c1472c; --bug-ink: #ffffff;
     --ok: #2f7d4f;
     --warn: #b9770e;
 
@@ -30,14 +30,14 @@
       --page: #1b1f1a; --sheet: #22281f; --ink: #edeee2; --muted: #a7ad97; --line: #343c30;
       --w-bg: #22281f; --w-panel: #272e23; --w-line: #3a4334; --w-ink: #edeee2; --w-muted: #a0a791;
       --accent: #6fcab0; --accent-ink: #0f2420; --accent-soft: #223b33;
-      --bug: #e98567; --ok: #7fd79a; --warn: #e0b15c;
+      --bug: #e98567; --bug-ink: #2a1109; --ok: #7fd79a; --warn: #e0b15c;
     }
   }
   :root[data-theme="dark"] {
     --page: #1b1f1a; --sheet: #22281f; --ink: #edeee2; --muted: #a7ad97; --line: #343c30;
     --w-bg: #22281f; --w-panel: #272e23; --w-line: #3a4334; --w-ink: #edeee2; --w-muted: #a0a791;
     --accent: #6fcab0; --accent-ink: #0f2420; --accent-soft: #223b33;
-    --bug: #e98567; --ok: #7fd79a; --warn: #e0b15c;
+    --bug: #e98567; --bug-ink: #2a1109; --ok: #7fd79a; --warn: #e0b15c;
   }
 
   body[data-app="teacher"] {
@@ -288,6 +288,8 @@
   .btn.alt { background: var(--w-panel); color: var(--w-ink); border: 1px solid var(--w-line); }
   .btn.alt:hover { border-color: var(--accent); filter: none; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
+  /* For a confirm button that undoes work: leaving a class, clearing a session */
+  .btn.danger { background: var(--bug); color: var(--bug-ink); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
 
   .tiny {
@@ -354,7 +356,10 @@
 
   .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-bottom: 14px; }
   .stat { padding: 2px 0; }
-  .stat + .stat { border-left: 1px solid var(--w-line); padding-left: 16px; }
+  /* The divider belongs between the two columns only. ".stat + .stat" put one on
+     every tile but the first, which indented the left column on later rows. */
+  .stat:nth-child(even) { border-left: 1px solid var(--w-line); padding-left: 16px; }
+  .stat-wide { grid-column: 1 / -1; border-left: 0; padding-left: 0; border-top: 1px solid var(--w-line); padding-top: 8px; margin-top: 6px; }
   .stat b { display: block; font-size: 22px; font-weight: 700; }
   .stat span { font-size: 12px; color: var(--w-muted); }
 
@@ -474,6 +479,17 @@
 .lib-card-title { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--ink); line-height: 1.25; }
 .lib-card-snippet { font-size: 13px; color: var(--muted); line-height: 1.4; flex: 1; }
 .lib-card-meta { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; margin-top: 2px; }
+/* Shown on the card itself when a reading will not open, so the message is where the click was */
+.lib-card-fail { font-size: 12px; color: var(--bug); line-height: 1.4; border-top: 1px solid var(--bug); padding-top: 8px; }
+
+/* Quiz loading bar: sweeps while the question writer works, because the wait
+   can run past a minute and a static line of text reads as frozen. */
+.quiz-wait { height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 10px; }
+.quiz-wait > span { display: block; height: 100%; width: 34%; border-radius: 999px; background: var(--accent); animation: quizWaitSweep 1.5s ease-in-out infinite; }
+@keyframes quizWaitSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
+@media (prefers-reduced-motion: reduce) {
+  .quiz-wait > span { animation: none; width: 100%; opacity: .5; }
+}
 
 /* ---- Quiz library (a list, not a card grid -- reads as a different
    kind of screen from Readings, not the same page with a new title) ---- */
