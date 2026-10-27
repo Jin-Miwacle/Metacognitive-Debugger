@@ -13,6 +13,9 @@ checked here against the passage.
     R5  output      names, numbers and quotes in every reply must come from the sources
     R6  claims      an answer the text contradicts is not agreed with (model labels, code verifies ids)
     R7  facts       statements in the coach's reply that the text doesn't back are removed (same pattern)
+    R8  asking      a hint turn has to ask the student something, not state the answer
+    R9  language    the reply is in the language that was chosen for it
+    R10 repetition  the reply is not a near-copy of something already said in this thread
 
 Pure functions only: no torch, no model. The model call is passed in as `ask`, with the
 same signature as main.ask_sealion, so the tests can use a fake.
@@ -40,6 +43,7 @@ class GroundingResult:
     target: str = ""              # R3: the phrase, spelled exactly as in the passage
     question: str = ""
     term: str = ""                # what the passage does mention (for the NOT_STATED template)
+    claim: str = ""               # R6's verdict on what the student said, when one was asked for
 
     def log_line(self) -> str:
         line = (f"[grounding] label={self.label} rule={self.rule} "
@@ -86,10 +90,25 @@ nasaan ibig sabihin kahulugan nito dito doon may mayroon meron wala hindi oo lan
 kasi dahil para nang pa nga yung isa
 """.split())
 
-# Capitalized words that are not names even mid-sentence.
+# Capitalized words that are not names even mid-sentence. The second block is
+# words that commonly OPEN a sentence: without them, checking a sentence's first
+# word (see extract_names' include_first) would read "Suddenly" as a character.
 _NOT_NAMES = _STOP | set("""
 look think read notice try great good let let's now remember okay hmm well english filipino tagalog
 taglish grade coach student tingnan basahin subukan tama magaling sige teksto
+""".split()) | set("""
+after again almost already also although always another any because before begin both but check
+choose close consider describe despite during each either even every except explain find first
+focus following for from good great here however if imagine instead keep last later let look
+maybe meanwhile more most next no notice now once only open or other perhaps pick picture
+read remember right second see several since so some start still such suddenly take tell than
+that then there these they think this those though through together too try unless until use
+very watch well what when where whether which while who why with without yes yet your
+ang anong ano alin bago bakit basahin bawat dahil dapat dito doon gayunpaman halimbawa hanapin
+higit huwag ikaw isipin isa kahit kailan kailangan kapag karaniwan kasi katulad kaya kung
+lahat lamang madalas mag maging maaari marahil masdan maski matapos mayroon minsan mula muli
+ngayon pagkatapos pansinin para pero pumili sabihin sakali samakatuwid sana sapagkat siguro
+simula sinong subalit subukan sundin tama tapos tignan tingnan tuwing tulad una unang
 """.split())
 
 _TITLES = {"mr", "mrs", "ms", "dr", "gng", "g", "bb", "mang", "aling", "lola", "lolo", "tita", "tito",
@@ -160,8 +179,16 @@ _SENT_START = re.compile(r"(^|[.!?:;\n]|^\W)[\s\"'“‘(]*$")
 # "sino si michelle", "kay michelle".
 _LOWER_NAME = re.compile(
     r"(?:^\W*(?:(?:who|where)\s+(?:is|was|are|were|did|does)|who's|whos|where's|wheres|"
-    r"(?:what|how)\s+about)\s+|\b(?:si|sina|kay|nasaan)\s+)([^\W\d_][\w'-]*)"
+    r"(?:what|how)\s+about)\s+"
+    r"|\b(?:tell|talk)\s+me\s+(?:about|more\s+about)\s+"
+    r"|\b(?:explain|describe|about|regarding)\s+"
+    r"|\b(?:what|who|where|when|why|how)\s+(?:did|does|is|was|are|were)\s+"
+    r"|\b(?:si|sina|kay|kina|ni|nina|nasaan|tungkol\s+kay)\s+)"
+    r"([^\W\d_][\w'-]*)"
     r"(?:\s+([^\W\d_][\w'-]*))?", re.I)
+
+
+_CONTRACTION = re.compile(r"'(re|ll|ve|d|m|t|s)$", re.I)
 
 
 def _clean_token(t: str) -> str:
@@ -169,20 +196,73 @@ def _clean_token(t: str) -> str:
     return re.sub(r"'s$", "", t, flags=re.I).strip("'-")
 
 
-def extract_names(text: str, lowercase_hints: bool = False) -> list:
+def _not_a_name(token: str) -> bool:
+    """Ordinary words, including the contractions that open a sentence.
+
+    Checking a sentence's first word made "You're right" read as a character
+    called You're, which would fire R5 on a large share of perfectly good
+    replies. The part before the apostrophe is what decides it, so O'Brien
+    still counts as a name.
+    """
+    low = token.lower()
+    if low in _NOT_NAMES or low in _PERSON_MARKERS:
+        return True
+    base = _CONTRACTION.sub("", low)
+    return base != low and (base in _NOT_NAMES or base in _CONTRACTION_BASES)
+
+
+_CONTRACTION_BASES = set("""
+don doesn didn isn aren wasn weren won wouldn couldn shouldn hasn haven hadn ain mustn needn
+shan daren oughtn mightn
+""".split())
+
+# Filipino verbs carry their marking in the word itself, and a command opens a
+# sentence capitalised exactly where a name would: "Ipaliwanang kung bakit...".
+# Reading one as a character made the coach answer "the passage doesn't mention
+# Ipaliwanang". Only the first word of a sentence is judged this way, since
+# that is the only place the capital proves nothing.
+# Only prefixes that mark a verb and nothing else. Short ones like "ma" and
+# "na" are left out on purpose: they would swallow Maria and Nanding.
+_FIL_VERB_PREFIX = ("ipa", "ipag", "ipinag", "ipang", "magpa", "nagpa", "magsi", "nagsi",
+                    "maki", "naki", "makipag", "nakipag", "mang", "pinag", "ipinaki")
+
+
+def _looks_like_a_verb(word: str) -> bool:
+    """Filipino verb shape, by a prefix that only verbs carry."""
+    w = word.lower()
+    return len(w) >= 6 and any(w.startswith(p) for p in _FIL_VERB_PREFIX)
+
+
+def extract_names(text: str, lowercase_hints: bool = False,
+                  include_first: bool = False) -> list:
     """Capitalized words/sequences that look like names.
 
-    The first word of a sentence is skipped (it is capitalized anyway), so a name that
-    opens a sentence is only caught when another capitalized word follows it.
+    By default the first word of a sentence is skipped, since every sentence
+    starts with a capital and "Look" is not a person. That left a hole: an
+    invented name as the first word went unseen, so "Michelle lit the lamp"
+    passed while "The lamp was lit by Michelle" was caught.
+
+    include_first=True keeps the first word too, relying on _NOT_NAMES to
+    discard the ordinary words that open sentences.
     """
     text = _ABBREV.sub(lambda m: m.group(1), text or "")
+    # A word inside quote marks is being quoted or defined, not used as a name:
+    # 'Behind' means 'at the back of' is the coach explaining a word. Quoted
+    # spans have their own rule (check_reply verifies them against the passage),
+    # so blanking them here loses no coverage. Spaces keep every offset intact.
+    text = _QUOTED.sub(lambda m: " " * len(m.group(0)), text.translate(_QUOTE_MAP))
     names = []
     for m in _CAP_SEQ.finditer(text):
         tokens = m.group(0).split()
-        if _SENT_START.search(text[:m.start()]):
+        opens_sentence = bool(_SENT_START.search(text[:m.start()]))
+        if not include_first and opens_sentence:
             tokens = tokens[1:]
         kept = [_clean_token(t) for t in tokens]
-        kept = [t for t in kept if len(t) > 1 and t.lower() not in _NOT_NAMES and t.lower() not in _PERSON_MARKERS]
+        kept = [t for t in kept if len(t) > 1 and not _not_a_name(t)]
+        # The first word of a sentence is capitalised whatever it is, so a word
+        # shaped like a verb there is a verb, not a character.
+        if include_first and opens_sentence and kept and _looks_like_a_verb(kept[0]):
+            kept = kept[1:]
         if kept:
             names.append(" ".join(kept))
     if lowercase_hints:
@@ -218,14 +298,14 @@ def earlier_missing_names(earlier: list, passage: str) -> list:
     """Names the student brought up earlier in this thread that the passage never mentions."""
     names = []
     for text in earlier or []:
-        names += extract_names(text, lowercase_hints=True)
+        names += extract_names(text, lowercase_hints=True, include_first=True)
     return list(dict.fromkeys(find_missing_names(names, passage)))
 
 
 def names_in(text: str, earlier_missing: list) -> list:
     """Names in this message, plus any earlier missing name it mentions again in any case
     ("is ethan her brother?" after "Who is Ethan?")."""
-    names = extract_names(text, lowercase_hints=True)
+    names = extract_names(text, lowercase_hints=True, include_first=True)
     have = {n.lower() for n in names}
     for n in earlier_missing or []:
         if n.lower() not in have and _has_word(n, text):
@@ -376,6 +456,26 @@ def verify(result: Optional[dict], candidate_ids: list, sentences: list, questio
                 g.notes.append(f"R2: answer {result['answer']!r} is written in sentence {i} -> STATED")
                 g.label, g.rule = STATED, "R2:answer_in_text"
                 break
+    # R2 safety net. The model sometimes answers NOT_STATED for something the
+    # passage says outright: asked who the Little Red Hen's friends were, it
+    # replied that the text does not say, with the list of friends in front of
+    # it. When every content word of the question sits in ONE sentence, that
+    # sentence is about the question, so the verdict is overruled.
+    #
+    # Reason questions are left alone: "why did Mara climb the steps" shares
+    # all its words with the sentence that says she climbed them, and the
+    # reason is still not written there. Short questions are left alone too,
+    # since one or two shared words prove nothing.
+    if g.label == NOT_STATED and not _REASON_Q.match(question or ""):
+        q_terms = [t for t in key_terms(question) if t not in _META]
+        if len(q_terms) >= 3:
+            for i in candidate_ids:
+                if all(_term_in(t, sentences[i - 1]) for t in q_terms):
+                    g.notes.append(f"R2: every word of the question is in sentence {i} "
+                                   f"-> NOT_STATED overruled")
+                    g.label, g.rule, valid = STATED, "R2:question_in_one_sentence", [i]
+                    break
+
     g.evidence_ids = sorted(valid)
     g.evidence = [sentences[i - 1] for i in g.evidence_ids]
     return g
@@ -501,7 +601,9 @@ Use ONLY those sentences, never outside knowledge. For each numbered reply line,
 SUPPORTED: the passage sentences say it, or it follows directly from what they say. Saying what a word means counts if the passage uses the word that way.
 GUESS: the passage does not say it, but the sentences give a clue to it. A reason ("because", "so") or a feeling is a GUESS unless a sentence states that exact reason or feeling.
 INVENTED: the line states something about the story (an event, a reason, a feeling, a place, what happens next) that the passage sentences do not say or show.
-NOT_ABOUT_STORY: the line does not state anything about the story (encouragement, "keep reading", "look at this sentence", "the text doesn't say"), or it only repeats what the student said in order to correct it.
+NOT_ABOUT_STORY: the line does not state anything about the story (encouragement, "keep reading", "look at this sentence", "the text doesn't say"), or it only repeats what the student said or asked.
+A line about what a WORD means is NOT_ABOUT_STORY, not INVENTED: "'Come out' has several meanings", "a harbour is where boats shelter", "'daang' means street". A word's meaning is not an event in the story, so it needs no sentence to back it.
+Repeating the student's own question back to them is NOT_ABOUT_STORY, even when the passage never answers that question.
 For a line that is a question, choose one of these instead:
 ON_TEXT: the passage sentences answer the question or give clues to its answer.
 OFF_TEXT: the question asks about something the passage sentences never mention (for example, what is in front of a building when the passage only says what is behind it).
@@ -528,6 +630,8 @@ def hedged_throughout(line: str) -> bool:
 def reply_statements(reply: str) -> list:
     """The reply's sentences, statements and questions alike."""
     return split_sentences(reply)
+
+
 
 
 def check_facts(ask: Callable, reply: str, sentences: list, selection: str = "",
@@ -644,6 +748,7 @@ def answer_context(answer: str, passage: str, sentences: list, full_passage: boo
     g.evidence = [sentences[i - 1] for i in g.evidence_ids]
     if ask is not None and not g.missing_names:
         verdict, ids, shown = check_claim(ask, answer, coach_line, sentences, selection)
+        g.claim = verdict
         g.notes.append(f"R6: claim {verdict} evidence={ids} (shown {shown})")
         if verdict == "CONTRADICTED":
             g.label, g.rule = CONTRADICTED, "R6:contradicted"
@@ -798,6 +903,67 @@ def unquote(reply: str, pieces: list) -> str:
     return _QUOTED.sub(fix, plain)
 
 
+# ---------------------------------------------------------------------------
+# R8 asking, R9 language, R10 repetition
+#
+# These three judge the reply as a coaching turn rather than against the
+# passage, so they need no model call and run even with the passage rules off.
+# ---------------------------------------------------------------------------
+def asks_question(reply: str) -> bool:
+    """R8. True when the reply actually asks the student something.
+
+    A hint turn that states the answer is the failure the whole system exists
+    to prevent, and nothing else catches it: a reply can be perfectly grounded
+    in the passage and still just hand over the answer.
+    """
+    return any(s.rstrip().endswith("?") for s in split_sentences(reply))
+
+
+_FIL_MARKER = re.compile(
+    r"\b(ang|ng|mga|sa|ay|na|hindi|ko|po|ito|siya|nila|kami|tayo|ba|mo|ka|natin|niya|"
+    r"kung|dahil|kasi|para|pero|lang|naman|yung|iyon|sina|kay)\b", re.I)
+
+
+def filipino_markers(text: str) -> int:
+    """How many DISTINCT Filipino function words the text uses."""
+    return len({m.group(0).lower() for m in _FIL_MARKER.finditer(text or "")})
+
+
+def wrong_language(reply: str, lang: str) -> bool:
+    """R9. True when the reply is clearly not in the language that was chosen.
+
+    Quoted spans are removed first: a coach replying in English about a
+    Filipino passage quotes Filipino words, and that is correct, not drift.
+    English is judged strictly, because drifting into Filipino on an English
+    passage is the failure that actually happened. Filipino is judged loosely,
+    because Taglish is allowed and a short reply may use no marker at all.
+    """
+    body = _QUOTED.sub(" ", (reply or "").translate(_QUOTE_MAP))
+    markers = filipino_markers(body)
+    if lang == "en":
+        return markers >= 3
+    if lang == "fil":
+        return markers == 0 and len(_words(body)) >= 12
+    return False
+
+
+def repeats_any(reply: str, earlier: list, threshold: float = 0.8) -> bool:
+    """R10. True when the reply is nearly the same as something already said.
+
+    Compares word sets, so a reworded repeat still counts. The threshold is
+    higher than the one used for re-explanations, because two different
+    questions about one passage legitimately share most of their words.
+    """
+    words = set(_words(reply))
+    if not words:
+        return False
+    for e in earlier or []:
+        old = set(_words(e))
+        if old and len(words & old) / len(words | old) >= threshold:
+            return True
+    return False
+
+
 def check_reply(reply: str, passage: str, message: str = "", history=None, selection: str = "") -> list:
     """R5. Violations in a coach reply (empty list = OK).
 
@@ -811,12 +977,23 @@ def check_reply(reply: str, passage: str, message: str = "", history=None, selec
     history = history or []
     sources = "\n".join([passage or "", message or ""] + [_text_of(t) for t in history])
     violations = []
-    for name in extract_names(reply):
+    # Names may come from the conversation: the coach has to be able to say a
+    # name back to the student who used it.
+    for name in extract_names(reply, include_first=True):
         if find_missing_names([name], sources):
             violations.append(f"name:{name}")
+    # A number the student raised may be echoed, so the coach can ask where the
+    # text says it. What it may not do is AGREE with a number the passage never
+    # gives: "the label year says 1989" coming back as "you're right, the label
+    # is from 1989" turns the student's invention into a fact about the text.
+    agreeing = agrees(reply) and not says_not_stated(reply)
     for num in dict.fromkeys(re.findall(r"\d+(?:[.,:]\d+)*", reply or "")):
-        if not re.search(rf"(?<![\d.,]){re.escape(num)}(?!\d)", sources):
-            violations.append(f"number:{num}")
+        pattern = rf"(?<![\d.,]){re.escape(num)}(?!\d)"
+        if re.search(pattern, passage or ""):
+            continue
+        if re.search(pattern, sources) and not agreeing:
+            continue
+        violations.append(f"number:{num}")
     passage_words = " ".join(_words(passage))
     student_words = " ".join(_words(message or ""))
     for quote in text_quotes(reply):
@@ -832,17 +1009,73 @@ def check_reply(reply: str, passage: str, message: str = "", history=None, selec
     return violations
 
 
+def off_target(reply: str, selection: str, passage: str) -> list:
+    """R11. A short selection is what the turn is about, so the reply has to be
+    about it. Flags the reply that never mentions the selected words and instead
+    names a different proper noun out of the same sentence: a hint for "daang"
+    that talks about "Ilog-Binundok".
+
+    Only a selection of one to four words is judged, because a longer one is a
+    stretch of text rather than a target, and only when the reply picks up
+    another name: a hint that asks about the sentence without naming anything is
+    left alone. The caller decides which turns this applies to.
+    """
+    if not reply or not selection or not passage:
+        return []
+    sel_words = _words(selection)
+    if not 1 <= len(sel_words) <= 4:
+        return []
+    # Mentioned at all? _term_in matches "daan" against "daang" and back.
+    if any(_term_in(w, reply) for w in sel_words if len(w) >= 3):
+        return []
+    if norm(selection) in norm(reply):
+        return []
+    hosts = [s for s in split_sentences(passage) if norm(selection) in norm(s)]
+    if not hosts:
+        return []
+    sel_set = {w.lower() for w in sel_words}
+    taken = []
+    for host in hosts:
+        # include_first, because the sentence's own first word can be the name the
+        # reply drifted onto, and the passage's capitalisation is the evidence.
+        for name in extract_names(host, include_first=True):
+            if name.lower() in sel_set or any(p.lower() in sel_set for p in re.split(r"[-']", name)):
+                continue
+            if _has_word(name, reply) and name not in taken:
+                taken.append(name)
+    return [f"off_target:{n}" for n in taken]
+
+
+def _bare_forms(w: str) -> set:
+    """A word with a possessive or plural ending taken off, alongside itself.
+
+    _words() keeps "sun's" and "suns" whole, so comparing lengths against "son"
+    never happened and the near miss was missed. Both endings are stripped here
+    so the comparison sees "sun".
+    """
+    forms = {w}
+    for suffix in ("'s", "’s", "s'", "es", "s"):
+        if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+            forms.add(w[: -len(suffix)])
+    return forms
+
+
 def near_misses(text: str, selection: str, known: set) -> list:
     """Words of text that are one letter away from a word of a short selection and are not
-    known words of the passage: "sun" for "son"."""
+    known words of the passage: "sun" for "son", and "the sun's light" too."""
     if len(_words(selection)) > 6:
         return []
+    known_bare = {f for k in known for f in _bare_forms(k)}
     out = []
+    seen = set()
     for sel_word in {w for w in _words(selection) if len(w) >= 3 and w.isalpha() and w not in _STOP}:
-        for w in set(_words(text)):
-            if (w not in known and w not in _NOT_NAMES and len(w) == len(sel_word) and w.isalpha()
-                    and sum(a != b for a, b in zip(w, sel_word)) == 1):
-                out.append((w, sel_word))
+        for raw in set(_words(text)):
+            for w in _bare_forms(raw):
+                if (w not in known_bare and w not in _NOT_NAMES and len(w) == len(sel_word)
+                        and w.isalpha() and sum(a != b for a, b in zip(w, sel_word)) == 1
+                        and (raw, sel_word) not in seen):
+                    seen.add((raw, sel_word))
+                    out.append((raw, sel_word))
     return out
 
 

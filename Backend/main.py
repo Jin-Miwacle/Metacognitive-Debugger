@@ -470,8 +470,50 @@ _HEDGE_RETRY = (" Make clear this is a clue, not something the text says directl
 _REPEAT_RETRY = ("\nImportant: your last answer repeated your earlier explanation almost word for word. Write a "
                  "new explanation with different sentences.")
 _AGREED_RETRY =" The text says something different from what the student said, so do NOT start by agreeing."
+_NOTHING_RETRY = (" The student did not actually answer, so do NOT tell them they are right. "
+                  "Point them back to the text and ask again.")
+_OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your answer must be about \"{p}\". "
+                     "Do not explain any other word or name from that sentence.")
+_QUESTION_RETRY = (" End with ONE question for the student. Do NOT state the answer or explain it "
+                   "outright: your job this turn is to help them work it out.")
+_LANG_RETRY = {"en": " Write your whole reply in English.",
+               "fil": " Isulat ang buong sagot mo sa Filipino."}
+_REPEAT_ANY_RETRY = ("\nImportant: you already said something very close to this earlier in this "
+                     "conversation. Say something different, about a different part of the text.")
+
+
+def style_note(problems, lang="en"):
+    """The retry wording for R8, R9 and R10."""
+    note = ""
+    if "R8:no_question" in problems:
+        note += _QUESTION_RETRY
+    if "R9:wrong_language" in problems:
+        note += _LANG_RETRY.get(lang, _LANG_RETRY["en"])
+    if "R10:repeats" in problems:
+        note += _REPEAT_ANY_RETRY
+    return note
 _NOT_STATED_RETRY = (" Start by saying plainly that the text doesn't say this (in Filipino: \"Hindi sinabi ng "
                      "teksto...\").")
+
+def wants_question(ask):
+    """Turns whose job is to ask rather than tell. Explaining turns and a
+    confirmed success are meant to have no question, so they are left out."""
+    return not explaining(ask) and ask.mode not in ("success", "repeat")
+
+
+def style_problems(ask, reply):
+    """R8, R9 and R10. These judge the reply as a coaching turn, not against
+    the passage, so they run even when the passage rules are switched off."""
+    problems = []
+    if wants_question(ask) and not gr.asks_question(reply):
+        problems.append("R8:no_question")
+    if gr.wrong_language(reply, pick_language(ask)):
+        problems.append("R9:wrong_language")
+    earlier_coach = [t.text for t in ask.history if t.role == "coach" and t.text]
+    if gr.repeats_any(reply, earlier_coach):
+        problems.append("R10:repeats")
+    return problems
+
 
 def reply_problems(ask, reply, g):
     """R5 for every reply, plus R4 for INFERABLE ones and the "say it's not stated" check for NOT_STATED."""
@@ -482,11 +524,30 @@ def reply_problems(ask, reply, g):
         problems.append("NOT_STATED:not_said")
     if g is not None and g.label == gr.CONTRADICTED and gr.agrees(reply):
         problems.append("R6:agreed")
+    # Saying "Tama" to something that was not an answer at all. The student
+    # asked a question back, or said "ok", and the coach confirmed it as
+    # correct, which is how a wrong answer gets marked right.
+    if g is not None and g.claim == "NO_CLAIM" and gr.agrees(reply):
+        problems.append("R6:agreed_nothing")
+    # R11. On a turn whose job is the selected words themselves, a reply that
+    # drops them and explains a neighbouring name instead is off target.
+    if on_the_selection(ask):
+        problems += ["R11:" + p for p in gr.off_target(reply, ask.passage, rules_passage(ask))]
     return problems
+
+
+def on_the_selection(ask):
+    """Turns that are about the selected words, not the passage around them: a
+    vocabulary question, and any turn that has to explain the selection outright."""
+    if ask.problem in ("vocab", "word"):
+        return True
+    return explaining(ask) or ask.mode == "success"
 
 # "Say it in your own words" reads as a test and confuses students; the adapter sometimes adds it anyway.
 _RESTATE_REQUEST = re.compile(
-    r"[^.?!]*\b(own words|sariling (mga )?(salita|pananalita)|restate|say it back|explain it back)\b[^.?!]*[.?!]?\s*",
+    r"[^.?!]*\b(own words|sariling (mga )?(salita|pananalita)|restate|say it back|explain it back"
+    r"|read (that|it|the sentence|this)[^.?!]* (out loud|aloud)|basahin mo[^.?!]* (nang |ng )?malakas"
+    r"|repeat (that|it|after me)|ulitin mo)\b[^.?!]*[.?!]?\s*",
     re.I)
 
 # "The key sentence says..." refers to a list in the prompt that the student never sees.
@@ -627,10 +688,18 @@ def _checked_reply(ask, g, lang):
         if repeats_earlier(reply, before):
             print(f"[rules] still repeating -> text-based fallback: {reply!r}")
             return re_explain_fallback(ask, lang, g), True
+    style = style_problems(ask, reply)
     if not grounding_on() or not rules_passage(ask):
+        if not style:
+            return reply, False
+        print(f"[rules] reply failed {style} -> regenerating once: {reply!r}")
+        reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=style_note(style, lang)), lang, 0.3)
+        if style_problems(ask, reply):
+            print(f"[rules] still failing -> fallback template: {reply!r}")
+            return gr.fallback_reply(g or gr.GroundingResult(), lang), True
         return reply, False
 
-    problems = reply_problems(ask, reply, g)
+    problems = reply_problems(ask, reply, g) + style
     if not problems:
         return reply, False
     bad_quotes = [p[len("quote:"):] for p in problems if p.startswith("quote:")]
@@ -644,10 +713,14 @@ def _checked_reply(ask, g, lang):
     print(f"[grounding] reply failed {problems} -> regenerating once: {reply!r}")
     note = (_GROUNDING_RETRY + (_HEDGE_RETRY if "R4:unhedged" in problems else "")
             + (_NOT_STATED_RETRY if "NOT_STATED:not_said" in problems else "")
-            + (_AGREED_RETRY if "R6:agreed" in problems else ""))
+            + (_AGREED_RETRY if "R6:agreed" in problems else "")
+            + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
+            + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
+               if any(p.startswith("R11:") for p in problems) else "")
+            + style_note(problems, lang))
     reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang,
                             0.3 if temperature > 0.3 else 0.0)
-    problems = reply_problems(ask, reply, g)
+    problems = reply_problems(ask, reply, g) + style_problems(ask, reply)
     if [p for p in problems if p != "R4:unhedged"]:
         print(f"[grounding] still failing {problems} -> fallback template: {reply!r}")
         if ask.mode == "success":
@@ -1281,7 +1354,7 @@ def should_give_up(ask):
 def _fail(what: str, e: Exception):
     # The widget falls back to its offline demo if any of these fail.
     print(f"Error while {what}:", repr(e))
-    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Check the server window for details.")
+    raise HTTPException(status_code=502, detail=f"The AI could not do that ({what}). Try again in a moment, and tell whoever is running the backend if it keeps happening.")
 
 @app.post("/partner")
 def partner(ask: Ask):
@@ -1317,8 +1390,13 @@ def partner(ask: Ask):
         if gave_up and ask.mode == "followup" and _ACK.match(ask.message or ""):
             # "ok" after the explanation: close the turn instead of asking a fresh question.
             reply_text = _KEEP_READING[pick_language(ask)]
-        elif g is not None and g.label == gr.NOT_IN_TEXT:
-            reply_text = gr.fallback_reply(g, pick_language(ask))  # R1: fixed template, no model call
+        elif g is not None and (g.label == gr.NOT_IN_TEXT or g.missing_names):
+            # R1, plus the same answer for a name the student brought up while
+            # answering rather than asking. Both end at the same fixed template,
+            # with no model call. Without the second case, "Explain why
+            # Crisostomo Ibarra left" went to the model, which had no idea who
+            # that was and asked about something else entirely.
+            reply_text = gr.fallback_reply(g, pick_language(ask))
             if ask.mode in ("stuck", "giveup") and requested != "stuck":
                 ask.mode = "followup"  # asking about a name is not a rung on the hint ladder
         else:
