@@ -997,13 +997,18 @@ function wireQuizBack() {
 async function buildQuiz(reading, settings) {
   const el = document.getElementById('classesPane');
   el.innerHTML = `${quizBackLink()}<h1>${escapeHtml(settings.title)}</h1>
-    <p class="hint">Writing ${settings.n} questions from &ldquo;${escapeHtml(reading.title)}&rdquo;. This can take a minute.</p>`;
+    <p class="hint">Writing ${settings.n} questions from &ldquo;${escapeHtml(reading.title)}&rdquo;.
+      They appear on this screen when they are ready.</p>
+    <div class="quiz-wait" aria-hidden="true"><span></span></div>
+    <p class="small" id="qzWaited" style="margin:4px 0 0" role="status"></p>`;
   wireQuizBack();
+  tickQuizWait();
 
   let questions;
   try {
     questions = await generateQuizQuestions({ text: reading.body, ...settings });
   } catch (err) {
+    stopQuizWait();
     el.innerHTML = `${quizBackLink()}<h1>${escapeHtml(settings.title)}</h1>
       <div class="card"><b>Could not make the quiz</b>
         <p style="margin:6px 0 0">${escapeHtml(err.message)}</p></div>
@@ -1014,8 +1019,26 @@ async function buildQuiz(reading, settings) {
     document.getElementById('qzRetry').addEventListener('click', () => buildQuiz(reading, settings));
     return;
   }
+  stopQuizWait();
   renderQuizReview(reading, settings, questions);
 }
+
+/* The same counter the student side shows, so a long wait does not read as frozen. */
+let qzWaitTimer = null, qzWaitStarted = 0;
+function tickQuizWait() {
+  stopQuizWait();
+  qzWaitStarted = Date.now();
+  const paint = () => {
+    const el = document.getElementById('qzWaited');
+    if (!el) { stopQuizWait(); return; }
+    const s = Math.round((Date.now() - qzWaitStarted) / 1000);
+    el.textContent = s < 5 ? ''
+      : `Waiting ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} so far.`;
+  };
+  paint();
+  qzWaitTimer = setInterval(paint, 1000);
+}
+function stopQuizWait() { clearInterval(qzWaitTimer); qzWaitTimer = null; }
 
 /* The review step */
 function renderQuizReview(reading, settings, questions) {

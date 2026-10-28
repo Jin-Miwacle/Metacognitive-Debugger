@@ -279,15 +279,25 @@ const DEMO_REPLIES = {
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
 /* ---------- Talking to the backend ---------- */
-async function callBackend(path, body) {
+const QUIZ_TIMEOUT_MS = 420000;   // the same seven minutes the teacher page allows
+
+async function callBackend(path, body, timeoutMs) {
   if (!CONFIG.API_BASE) return null;
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   try {
     const r = await fetch(CONFIG.API_BASE.replace(/\/$/, '') + path, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      signal: ctrl ? ctrl.signal : undefined
     });
     if (r.ok) return await r.json();
     console.warn('The backend answered with an error:', r.status, path);
   } catch (e) {
+    if (e && e.name === 'AbortError') {
+      console.warn('Gave up waiting for ' + path + ' after '
+        + Math.round(timeoutMs / 1000) + ' seconds. The backend may still be working.');
+      return null;
+    }
     // A dead tunnel and a CORS misconfiguration look identical from here: neither
     // sends a reply the browser will let us read. Name both, so the console line
     // is worth something to whoever reads it.
@@ -297,6 +307,8 @@ async function callBackend(path, body) {
       + ' ALLOWED_ORIGINS=' + location.origin
       + '; a Cloudflare error page means the address in config.js is out of date.', e);
     noteOfflineFallback();
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   return null;
 }
@@ -1929,7 +1941,7 @@ async function loadQuizQuestions() {
     kinds: quizPrefs.kinds,
     // Follows the coach-language setting they already chose in Settings rather
     language: state.responseLanguage === 'auto' ? null : state.responseLanguage
-  });
+  }, QUIZ_TIMEOUT_MS);
   // They backed out or picked another reading while this was in flight.
   if (token !== quizRequestToken) return;
   if (d && Array.isArray(d.questions) && d.questions.length) {
