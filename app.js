@@ -860,7 +860,13 @@ async function markStuck(id) {
   // Pressing "Still stuck" has to reach the backend as something the
   const stuckSays = "I'm still stuck.";
   t.msgs.push({ from: 'you', text: stuckSays });
+  // Redraw before waiting, the way the other two coach calls do. Without this the
+  // button looked dead: the state changed, nothing was repainted, and the press
+  // only showed up when some other action happened to trigger a render.
+  t.msgs.push({ from: 'ai', text: 'Thinking…', typing: true });
+  renderDebug();
   const r = await askPartner(partnerPayload('stuck', t, stuckSays));
+  t.msgs = t.msgs.filter(m => !m.typing);
   t.msgs.push({ from: 'ai', text: r.reply, mode: r.mode, demo: r.demo }); t.busy = false;
   renderDebug();
   dbSaveTranscript(t);
