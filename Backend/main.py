@@ -631,6 +631,9 @@ _NOTHING_RETRY = (" The student did not actually answer, so do NOT tell them the
                   "Point them back to the text and ask again.")
 _OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your answer must be about \"{p}\". "
                      "Do not explain any other word or name from that sentence.")
+_ANSWERED_RETRY = (" The student has already answered this correctly. Tell them they are right, say what "
+                   "it means in ONE short sentence using the context, and tell them they are ready to read "
+                   "on. Do NOT ask another question.")
 _QUESTION_RETRY = (" End with ONE question for the student. Do NOT state the answer or explain it "
                    "outright: your job this turn is to help them work it out.")
 _LANG_RETRY = {"en": " Write your whole reply in English.",
@@ -642,7 +645,9 @@ _REPEAT_ANY_RETRY = ("\nImportant: you already said something very close to this
 def style_note(problems, lang="en"):
     """The retry wording for R8, R9 and R10."""
     note = ""
-    if "R8:no_question" in problems:
+    # R8 and R12 pull opposite ways. When the student has already answered, the
+    # turn is finished, so R12 wins and the reply is not asked for a question.
+    if "R8:no_question" in problems and "R12:answered_and_asked_again" not in problems:
         note += _QUESTION_RETRY
     if "R9:wrong_language" in problems:
         note += _LANG_RETRY.get(lang, _LANG_RETRY["en"])
@@ -658,11 +663,15 @@ def wants_question(ask):
     return not explaining(ask) and ask.mode not in ("success", "repeat")
 
 
-def style_problems(ask, reply):
+def style_problems(ask, reply, settled=False):
     """R8, R9 and R10. These judge the reply as a coaching turn, not against
-    the passage, so they run even when the passage rules are switched off."""
+    the passage, so they run even when the passage rules are switched off.
+
+    `settled` means the student has already answered correctly, which is R12's
+    case: the turn's job is to confirm and stop, so R8 does not ask for a question.
+    """
     problems = []
-    if wants_question(ask) and not gr.asks_question(reply):
+    if wants_question(ask) and not settled and not gr.asks_question(reply):
         problems.append("R8:no_question")
     if gr.wrong_language(reply, pick_language(ask)):
         problems.append("R9:wrong_language")
@@ -670,6 +679,12 @@ def style_problems(ask, reply):
     if gr.repeats_any(reply, earlier_coach):
         problems.append("R10:repeats")
     return problems
+
+
+def answered_already(g):
+    """R12. The student gave an answer and the text supports it, so the turn is
+    finished: confirm it and stop, rather than asking the same thing again."""
+    return g is not None and g.claim == "SUPPORTED"
 
 
 def reply_problems(ask, reply, g):
@@ -686,6 +701,13 @@ def reply_problems(ask, reply, g):
     # correct, which is how a wrong answer gets marked right.
     if g is not None and g.claim == "NO_CLAIM" and gr.agrees(reply):
         problems.append("R6:agreed_nothing")
+    # R12. The student answered, the text supports it, and the coach said so, then
+    # asked another question anyway. The thread loops on a point already settled:
+    # "You're right, cabinet is in the text. What kind of furniture holds records?"
+    # The prompt for a follow-up turn always asks for a question, so it keeps asking
+    # even once there is nothing left to work out.
+    if g is not None and g.claim == "SUPPORTED" and gr.agrees(reply) and gr.asks_question(reply):
+        problems.append("R12:answered_and_asked_again")
     # R11. On a turn whose job is the selected words themselves, a reply that
     # drops them and explains a neighbouring name instead is off target.
     if on_the_selection(ask):
@@ -848,13 +870,13 @@ def _checked_reply(ask, g, lang):
         if repeats_earlier(reply, before):
             print(f"[rules] still repeating -> text-based fallback: {reply!r}")
             return re_explain_fallback(ask, lang, g), True
-    style = style_problems(ask, reply)
+    style = style_problems(ask, reply, settled=answered_already(g))
     if not grounding_on() or not rules_passage(ask):
         if not style:
             return reply, False
         print(f"[rules] reply failed {style} -> regenerating once: {reply!r}")
         reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=style_note(style, lang)), lang, 0.3)
-        if style_problems(ask, reply):
+        if style_problems(ask, reply, settled=answered_already(g)):
             print(f"[rules] still failing -> fallback template: {reply!r}")
             return gr.fallback_reply(g or gr.GroundingResult(), lang), True
         return reply, False
@@ -875,12 +897,13 @@ def _checked_reply(ask, g, lang):
             + (_NOT_STATED_RETRY if "NOT_STATED:not_said" in problems else "")
             + (_AGREED_RETRY if "R6:agreed" in problems else "")
             + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
+            + (_ANSWERED_RETRY if "R12:answered_and_asked_again" in problems else "")
             + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
                if any(p.startswith("R11:") for p in problems) else "")
             + style_note(problems, lang))
     reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang,
                             0.3 if temperature > 0.3 else 0.0)
-    problems = reply_problems(ask, reply, g) + style_problems(ask, reply)
+    problems = reply_problems(ask, reply, g) + style_problems(ask, reply, settled=answered_already(g))
     if [p for p in problems if p != "R4:unhedged"]:
         print(f"[grounding] still failing {problems} -> fallback template: {reply!r}")
         if ask.mode == "success":
