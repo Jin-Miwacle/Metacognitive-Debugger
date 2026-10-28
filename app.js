@@ -134,7 +134,8 @@ function renderSaveWarning() {
     ($('.sidebar-foot') || document.body).prepend(box);
   }
   const n = saveHealth.failures;
-  box.innerHTML = `<b>Not saving</b><span>${n} write${n === 1 ? '' : 's'} failed. `
+  // The bold heading and the count ran together as "Not saving1 write failed."
+  box.innerHTML = `<b>Not saving.</b> <span>${n} write${n === 1 ? '' : 's'} failed. `
     + `Your work is on screen but not in the database.</span>`;
   box.title = saveHealth.last;
 }
@@ -287,7 +288,14 @@ async function callBackend(path, body) {
     if (r.ok) return await r.json();
     console.warn('The backend answered with an error:', r.status, path);
   } catch (e) {
-    console.warn('Could not reach the backend, using the offline demo instead.', e);
+    // A dead tunnel and a CORS misconfiguration look identical from here: neither
+    // sends a reply the browser will let us read. Name both, so the console line
+    // is worth something to whoever reads it.
+    console.warn('No reply from the backend at ' + CONFIG.API_BASE + path
+      + ', so the offline demo is answering instead. Open ' + CONFIG.API_BASE
+      + ' in a tab: {"status":"ok"} means this is CORS and the backend needs'
+      + ' ALLOWED_ORIGINS=' + location.origin
+      + '; a Cloudflare error page means the address in config.js is out of date.', e);
     noteOfflineFallback();
   }
   return null;

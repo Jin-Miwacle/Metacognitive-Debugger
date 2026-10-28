@@ -686,9 +686,15 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
       throw new Error('The backend did not answer within ' + Math.round(QUIZ_TIMEOUT_MS / 1000)
         + ' seconds. It may still be loading the model. Try again in a minute.');
     }
-    throw new Error('Could not reach the backend at ' + base + '. '
-      + 'Check that it is running, that the tunnel address in config.js is the current one, '
-      + 'and that the browser console does not show a CORS error.');
+    // A dead tunnel and a CORS misconfiguration both land here looking the same,
+    // because neither sends a reply the browser will let us read. Opening the
+    // address in a tab is not subject to CORS, so it tells the two apart.
+    throw new Error('No reply from the backend at ' + base + '. Open that address in a new tab. '
+      + 'If it shows {"status":"ok"}, the backend is running and this is CORS: restart it with '
+      + 'ALLOWED_ORIGINS set to ' + location.origin + '. '
+      + 'If it shows a Cloudflare error page, the tunnel address in config.js is out of date. '
+      + 'If the tab loads but this keeps failing, check the backend terminal for a crash: '
+      + 'a quiz loads both models at once and can run the card out of memory.');
   } finally {
     clearTimeout(timer);
   }
