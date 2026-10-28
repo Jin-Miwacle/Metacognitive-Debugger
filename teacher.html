@@ -689,12 +689,16 @@ async function generateQuizQuestions({ text, n, kinds, language }) {
     // A dead tunnel and a CORS misconfiguration both land here looking the same,
     // because neither sends a reply the browser will let us read. Opening the
     // address in a tab is not subject to CORS, so it tells the two apart.
-    throw new Error('No reply from the backend at ' + base + '. Open that address in a new tab. '
-      + 'If it shows {"status":"ok"}, the backend is running and this is CORS: restart it with '
-      + 'ALLOWED_ORIGINS set to ' + location.origin + '. '
-      + 'If it shows a Cloudflare error page, the tunnel address in config.js is out of date. '
+    // The address and the steps go to the console, not onto the page. A teacher
+    // cannot act on either, and the screen may be in front of a class.
+    console.warn('No reply from the backend at ' + base + '/quiz. Open ' + base
+      + ' in a tab. {"status":"ok"} means it is running and this is CORS: restart it with '
+      + 'ALLOWED_ORIGINS=' + location.origin
+      + '. A Cloudflare error page means the address in config.js is out of date. '
       + 'If the tab loads but this keeps failing, check the backend terminal for a crash: '
-      + 'a quiz loads both models at once and can run the card out of memory.');
+      + 'a quiz holds both models at once and can run the card out of memory.', err);
+    throw new Error('The quiz service is not answering. Whoever is running the backend '
+      + 'needs to check it, then press Try again.');
   } finally {
     clearTimeout(timer);
   }
