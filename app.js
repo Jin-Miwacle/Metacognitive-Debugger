@@ -62,6 +62,7 @@ const state = {
   selectionNote: '',
   checkin: {
     on: false, everySec: CONFIG.CHECKIN_EVERY_SEC, nextAt: 0, pending: null, i: 0, responses: [], fetching: false, shown: [],
+    lastTick: Date.now(), held: false, popupHidden: false,
     // Whether a check-in shows as a floating popup the moment it's ready, instead of
     popupOn: (() => { try { return localStorage.getItem('checkinPopupOn') !== 'off'; } catch (e) { return true; } })()
   },
@@ -852,8 +853,13 @@ reader.addEventListener('click', e => {
 });
 
 /* ---- Check-in tab + floating popup ---- */
+function onTheReading() {
+  const w = $('#readerWorkspace'), v = $('#readingsView');
+  return !!(w && !w.hidden && v && !v.hidden);
+}
 function startCheckins() {
-  const c = state.checkin; c.on = true; c.nextAt = Date.now() + effectiveCheckinSec() * 1000;
+  const c = state.checkin; c.on = true;
+  c.lastTick = Date.now(); c.nextAt = c.lastTick + effectiveCheckinSec() * 1000;
 }
 async function fireCheckin() {
   const c = state.checkin;
@@ -870,12 +876,12 @@ async function fireCheckin() {
   let prompt, source;
   if (d && d.prompt) { prompt = d.prompt; source = 'ai'; }
   else { prompt = OFFLINE_CHECKINS[c.i++ % OFFLINE_CHECKINS.length]; source = 'demo'; }
-  c.fetching = false; c.pending = prompt; c.shown.push(prompt);
+  c.fetching = false; c.pending = prompt; c.popupHidden = false; c.shown.push(prompt);
   logEvent('checkin_prompt', { prompt, source });
   updateBadges();
   if (currentTab() === 'monitor') renderCheckin();
   // A popup is more likely to actually get seen than a dot on a tab the
-  if (c.popupOn) showCheckinPopup();
+  if (c.popupOn && onTheReading()) showCheckinPopup();
 }
 function renderCheckin() {
   const c = state.checkin, el = $('#p-monitor');
@@ -977,7 +983,10 @@ function showCheckinPopup() {
       ${checkinCardHtml(c.pending)}
     </div>`;
   const popup = $('.checkin-popup', host);
-  $('.checkin-popup-close', popup).addEventListener('click', () => { host.innerHTML = ''; });
+  $('.checkin-popup-close', popup).addEventListener('click', () => {
+    c.popupHidden = true;   // dismissed, so do not reopen it for this check-in
+    host.innerHTML = '';
+  });
   wireCheckinCard(popup, () => { host.innerHTML = ''; });
 }
 function updateCountdown() {
@@ -985,19 +994,35 @@ function updateCountdown() {
   if (!c.on) { el.textContent = 'Off'; return; }
   if (c.pending) { el.textContent = 'A check-in is waiting'; return; }
   const s = Math.max(0, Math.ceil((c.nextAt - Date.now()) / 1000));
-  el.textContent = `Next in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const clock = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  el.textContent = c.held ? `Next in ${clock}, paused until you are back on the reading`
+                          : `Next in ${clock}`;
 }
 setInterval(() => {
   const c = state.checkin;
-  if (!c.on || c.pending) { if (currentTab() === 'monitor') updateCountdown(); return; }
-  if (Date.now() < c.nextAt) { if (currentTab() === 'monitor') updateCountdown(); return; }
-  // Hold the clock while the student is off the reading: a check-in in the
-  // middle of a quiz or the Classes screen interrupts something else.
-  const reading = $('#readerWorkspace') && !$('#readerWorkspace').hidden
-    && !$('#readingsView').hidden;
-  if (!reading) { c.nextAt = Date.now() + 15000; }
-  else fireCheckin();
-  if (currentTab() === 'monitor') updateCountdown();
+  const now = Date.now();
+  // Missing means this is the first tick, which is one interval, not zero: with
+  // zero a held clock quietly lost a second the first time it was used.
+  const since = Math.max(0, now - (c.lastTick || (now - 1000)));
+  c.lastTick = now;
+  const paint = () => { if (currentTab() === 'monitor') updateCountdown(); };
+
+  // A check-in that arrived while the student was elsewhere waits for them to
+  // come back, rather than appearing over whatever they went to do.
+  if (c.pending) {
+    if (c.popupOn && !c.popupHidden && onTheReading() && !$('.checkin-popup')) showCheckinPopup();
+    paint(); return;
+  }
+  if (!c.on) { paint(); return; }
+
+  // Hold the clock while the student is off the reading, and while a quiz is
+  // being written: the backend answers one request at a time, so a check-in
+  // started now would sit behind the quiz and come back a minute later.
+  c.held = !onTheReading() || quizCtx.status === 'loading';
+  if (c.held) { c.nextAt += since; paint(); return; }
+
+  if (now >= c.nextAt && !c.fetching) fireCheckin();
+  paint();
 }, 1000);
 
 /* ---- Progress tab ---- */
@@ -1090,7 +1115,7 @@ async function endSession() {
   const ok = await askConfirm({
     title: 'End this session?',
     body: 'This closes the reading and takes you back to all readings. Download your session data first if you want to keep it.',
-    yes: 'End session', no: 'Keep reading'
+    yes: 'End session', no: 'Keep reading', danger: true
   });
   if (!ok) return;
   resetSession();
@@ -1875,7 +1900,9 @@ function tickQuizWait() {
     const el = $('#quizWaited');
     if (!el || quizCtx.status !== 'loading') { clearInterval(quizWaitTimer); return; }
     const s = Math.round((Date.now() - (quizCtx.startedAt || Date.now())) / 1000);
-    el.textContent = s < 5 ? '' : `Waiting ${s} seconds so far.`;
+    // Past a minute, "Waiting 83 seconds so far" is harder to read than 1:23.
+    const clock = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    el.textContent = s < 5 ? '' : `Waiting ${clock} so far.`;
   };
   paint();
   quizWaitTimer = setInterval(paint, 1000);
