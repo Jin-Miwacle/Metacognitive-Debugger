@@ -908,6 +908,23 @@ def remove_invented(ask, reply):
         print(f"[grounding] worded as guesses: {unhedged}")
     return gr.apply_fact_check(reply, invented, unhedged, pick_language(ask)), invented
 
+def survives_trimming(ask, g, before, after):
+    """Did R7's trimming leave a reply that still obeys the rules checked before it?
+
+    R7 runs last, so anything it removes is removed after every other rule has
+    passed the reply, and nothing looks again. On a NOT_STATED turn that was the
+    whole reply: the coach correctly said the text does not say it, R7 called
+    that uncited and deleted it, and the student was left with a question about
+    something else and no sign anything had been dropped.
+    """
+    if not usable(ask, after):
+        return False
+    if (g is not None and g.label == gr.NOT_STATED
+            and gr.says_not_stated(before) and not gr.says_not_stated(after)):
+        print("[grounding] R7 removed the line saying the text does not say it -> not keeping that reply")
+        return False
+    return True
+
 def generate_hint(ask, g=None):
     lang = pick_language(ask)
     reply, template = _checked_reply(ask, g, lang)
@@ -917,7 +934,7 @@ def generate_hint(ask, g=None):
     kept, invented = fact_checked(ask, reply)
     if not invented:
         return kept          # unchanged, or with its guesses now worded as guesses
-    if usable(ask, kept):
+    if survives_trimming(ask, g, reply, kept):
         return kept
     # Nothing but a closing line is left: try once more, told what not to say.
     note = ("\nImportant: the text does NOT say or mention these things, so do not say or ask them: "
@@ -926,8 +943,9 @@ def generate_hint(ask, g=None):
     print("[grounding] not enough left after removing invented details -> regenerating once")
     reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang, 0.3)
     if not reply_problems(ask, reply, g):
-        kept, invented = fact_checked(ask, reply)
-        if usable(ask, kept):
+        second = reply
+        kept, invented = fact_checked(ask, second)
+        if survives_trimming(ask, g, second, kept):
             return kept
     print("[grounding] still invented -> fallback template")
     if ask.mode == "success":

@@ -777,6 +777,14 @@ def check_facts(ask: Callable, reply: str, sentences: list, selection: str = "",
             continue
         valid = [i for i in _ids(c.get("evidence")) if i in cand]
         line = lines[n - 1]
+        if says_not_stated(line):
+            # "The text doesn't say exactly" is a statement about absence, so no
+            # sentence in the passage could ever cite it, and the rule below drops
+            # an uncited GUESS. That deleted the one line a NOT_STATED turn is
+            # required to carry, leaving a reply that quietly answered something
+            # else. Saying the text is silent is never an invented detail.
+            trace.append(f"({n}) {verdict} kept:not_stated")
+            continue
         if line.rstrip().endswith("?"):
             # Questions need no citation. One is removed only when the model calls it off-text AND it
             # brings in a word the passage never uses ("in front of" when it only says "behind"), so a
