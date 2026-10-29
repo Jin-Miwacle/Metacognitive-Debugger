@@ -1201,12 +1201,38 @@ function paragraphsToHtml(raw) {
 }
 
 /* ---------- */
+/* Below this a reading is too thin for the parts that need something to work
+   with: a check-in asking what you have read so far, a quiz, and the rules that
+   quote sentences back. It is the smallest quiz's worth of words. Said, not
+   enforced: a student pasting one paragraph because that paragraph is the
+   problem has a good reason, and the coach still works on it. */
+// Read inside the function, not at load: QUESTION_COUNTS is declared further
+// down the file, so naming it here would throw before the page finished loading.
+const minReadingWords = () => QUESTION_COUNTS[0] * WORDS_PER_QUESTION;
+
+function updatePasteLength() {
+  const box = $('#pasteText'), msg = $('#pasteLenMsg');
+  if (!box || !msg) return;
+  const words = countWords(box.value.trim());
+  if (!words) { msg.textContent = ''; msg.style.color = ''; return; }
+  if (words < minReadingWords()) {
+    msg.style.color = 'var(--warn)';
+    msg.textContent = `${words} words. You can still read this and ask about any part of it, `
+      + `but it is too short for a quiz, and check-ins will not have much to ask about.`;
+  } else {
+    msg.style.color = '';
+    msg.textContent = `${words} words.`;
+  }
+}
+
 let pasteTarget = 'reader';
 function openPasteDialog(target) {
   pasteTarget = target;
   $('#pasteFileMsg').textContent = '';
+  updatePasteLength();
   $('#pasteDlg').showModal();
 }
+$('#pasteText').addEventListener('input', updatePasteLength);
 
 /* The name the student gave their own text */
 function pastedTitleOrDefault() {
@@ -1225,6 +1251,7 @@ $('#pasteFile').addEventListener('change', async (e) => {
   try {
     const text = await extractTextFromFile(file);
     $('#pasteText').value = text;
+    updatePasteLength();
     // Only when they have not named it themselves, so an upload never
     const titleBox = $('#pasteTitle');
     if (titleBox && !titleBox.value.trim()) {
@@ -1250,6 +1277,7 @@ $('#pasteDlg').querySelector('form').addEventListener('submit', (e) => {
   }
   const title = pastedTitleOrDefault();
   $('#pasteText').value = '';
+  updatePasteLength();
   if ($('#pasteTitle')) $('#pasteTitle').value = '';
   $('#pasteDlg').close('ok');
   if (pasteTarget === 'reader') {
