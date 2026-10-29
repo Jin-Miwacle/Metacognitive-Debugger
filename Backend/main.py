@@ -498,16 +498,37 @@ def re_explain_fallback(ask, lang, g):
     return replies[0] if replies else _KEEP_READING[lang]
 
 def goal_instruction(ask):
+    """What the coach is told to do with the student's goal this turn.
+
+    goal_hint is the check for whether this part of the text has anything to do
+    with the goal: the app only sends it when they share a word. Every branch
+    that asks the coach to bring the goal up has to sit below that check.
+
+    The success branch used to sit above it, so on the one turn where the coach
+    was told outright to write a sentence linking the passage to the goal, it was
+    told that whether or not a link existed. A goal about Mary on a passage about
+    seeds left the model with a sentence to write and nothing to write it from,
+    and no rule would stop it: R5 and R7 check what is said about the text, and a
+    claim about the student's goal is not one.
+    """
     if not ask.goal or ask.mode in ("repeat", "stuck"):
         return ""
+    # The hint is computed in the browser, so a page that has not been reloaded
+    # can still send one of the words a goal is made of rather than its subject.
+    # "I want to know what happened" against a passage saying "happened" is not
+    # a connection, so the same list the goal check uses rejects it here too.
+    hint = (ask.goal_hint or "").strip()
+    if hint.lower() in gr._GOAL_WORDS:
+        hint = ""
+    if not hint:
+        # Nothing in this part connects to the goal, so do not reach for one.
+        return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
+                "otherwise do not mention the goal.")
     if ask.mode == "success":
-        return (" Then add ONE short sentence on how understanding this helps with their reading goal, "
-                "if it does.")
-    if ask.goal_hint:
-        return (f" This part is related to their reading goal (it mentions \"{ask.goal_hint}\"), so "
-                f"connect your question to that goal.")
-    return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
-            "otherwise do not mention the goal.")
+        return (f" Then add ONE short sentence on how understanding this helps with their reading goal, "
+                f"which mentions \"{hint}\" as this part does.")
+    return (f" This part is related to their reading goal (it mentions \"{hint}\"), so "
+            f"connect your question to that goal.")
 
 def problem_said(ask):
     if ask.problem == "other" and ask.problem_text and ask.problem_text.strip():
