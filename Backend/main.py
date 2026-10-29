@@ -525,10 +525,42 @@ def goal_instruction(ask):
         return (" Only if this part clearly connects to their reading goal, mention that link briefly; "
                 "otherwise do not mention the goal.")
     if ask.mode == "success":
-        return (f" Then add ONE short sentence on how understanding this helps with their reading goal, "
-                f"which mentions \"{hint}\" as this part does.")
+        # add_goal_line writes the closing sentence itself, so the model is not
+        # asked for one as well.
+        return ""
     return (f" This part is related to their reading goal (it mentions \"{hint}\"), so "
             f"connect your question to that goal.")
+
+_GOAL_LINE = {"en": "That's part of your goal too: you're reading to find out about {hint}.",
+              "fil": "Bahagi rin 'yan ng goal mo: nagbabasa ka para malaman ang tungkol sa {hint}."}
+
+def add_goal_line(ask, reply):
+    """The one sentence that ties a finished passage back to the goal.
+
+    Written here rather than asked for in the prompt. A rule cannot do this job:
+    every rule reads a finished reply and either keeps it or throws it away, so a
+    rule that demanded a goal link would send the turn to a fallback template,
+    and the templates mention the goal nowhere. Writing the sentence in code is
+    the only version that fires every time, and it cannot invent the link because
+    the word it names is already in both the goal and the reading.
+
+    Success only. On any other turn the coach has a question to ask and this
+    would talk over it.
+    """
+    if ask.mode != "success" or not ask.goal or not reply:
+        return reply
+    hint = (ask.goal_hint or "").strip()
+    if not hint or hint.lower() in gr._GOAL_WORDS:
+        return reply
+    low = hint.lower()
+    # The widget computes the hint, so an old page can send a word that is in
+    # neither. Say nothing about a link we cannot see for ourselves.
+    here = " ".join([ask.passage or "", ask.paragraph or "", ask.full_text or ""]).lower()
+    if low not in (ask.goal or "").lower() or low not in here:
+        return reply
+    if low in reply.lower():
+        return reply       # the coach already named it
+    return reply.rstrip() + "\n\n" + _GOAL_LINE[pick_language(ask)].format(hint=hint)
 
 def problem_said(ask):
     if ask.problem == "other" and ask.problem_text and ask.problem_text.strip():
@@ -549,6 +581,11 @@ def mode_instruction(ask):
     return text + goal_instruction(ask)
 
 def _mode_instruction(ask, p, question):
+    if ask.mode == "followup" and gr.asked_which_meaning(last_coach_line(ask)):
+        # R3 said the text supports both meanings, so the pick cannot be graded.
+        return (f"You offered the student two meanings for \"{p}\" and they just picked one. The text "
+                f"supports both, so do NOT tell them they are right or wrong and do NOT say which one "
+                f"you think it is. Ask ONE short question about which words in the text made them choose it.")
     if ask.mode == "success":
         return (f"The student has understood \"{p}\". Confirm they are right, "
                 f"restate the meaning in ONE short sentence using the context, and tell them they "
@@ -1962,10 +1999,35 @@ Do not repeat or closely copy a previous question. No greeting, no praise, no ex
 Reply with the question only."""
 
 
+def _checkin_prompt(ask, with_goal):
+    goal = f"Student's reading goal: \"{ask.goal[:200]}\"\n" if with_goal and ask.goal else ""
+    return f"{goal}Text context: {ask.text[:3000]}\nGenerate a single checking question."
+
 def generate_checkin(ask: CheckinAsk) -> str:
-    goal = f"Student's reading goal: \"{ask.goal[:200]}\"\n" if ask.goal else ""
-    prompt = f"{goal}Text context: {ask.text[:3000]}\nGenerate a single checking question."
-    return ask_sealion(CHECKIN_RULES, prompt, history=None, temperature=0.8, max_tokens=60)
+    """A check-in question, with the goal kept out of it unless it fits the reading.
+
+    "Connect what they read to their goal" is in the rules, so a goal the text
+    cannot answer is an instruction to invent a link, and the model takes it:
+    a goal of "get to know Sandra" on a story with no Sandra produced "...and
+    possibly connect to Sandra?". Nothing downstream would catch it, because the
+    grounding rules run on coach replies and never see a check-in.
+    """
+    fit = gr.goal_fit(ask.goal or "", ask.text)
+    q = ask_sealion(CHECKIN_RULES, _checkin_prompt(ask, fit["verdict"] == "ok"),
+                    history=None, temperature=0.8, max_tokens=60)
+    # The same question R5 asks of a coach reply: does it name someone the
+    # reading never mentions? The goal is not one of the sources, so a name
+    # taken from it fails here.
+    missing = gr.find_missing_names(gr.extract_names(q, include_first=True), ask.text)
+    if not missing:
+        return q
+    print(f"[checkin] question named {missing} -> regenerating without the goal")
+    q2 = ask_sealion(CHECKIN_RULES, _checkin_prompt(ask, False),
+                     history=None, temperature=0.8, max_tokens=60)
+    if gr.find_missing_names(gr.extract_names(q2, include_first=True), ask.text):
+        print("[checkin] still naming someone outside the reading -> no check-in this time")
+        return ""
+    return q2
 
 
 # =====================================================================
@@ -2043,6 +2105,12 @@ def partner(ask: Ask):
             # names someone the text never mentions: don't confirm it or close the thread.
             print(f"[grounding] success overruled by {g.rule}")
             ask.mode = "followup"
+        if ask.mode == "success" and gr.asked_which_meaning(last_coach_line(ask)):
+            # The turn right after an R3 question. R3 already recorded that the text
+            # does not settle the meaning, so naming the student's pick correct would
+            # contradict the rule that produced the question.
+            print("[grounding] success one turn after an ambiguity question -> asking what decided it")
+            ask.mode = "followup"
         if gave_up and ask.mode == "followup" and _ACK.match(ask.message or ""):
             # "ok" after the explanation: close the turn instead of asking a fresh question.
             reply_text = _KEEP_READING[pick_language(ask)]
@@ -2056,7 +2124,7 @@ def partner(ask: Ask):
             if ask.mode in ("stuck", "giveup") and requested != "stuck":
                 ask.mode = "followup"  # asking about a name is not a rung on the hint ladder
         else:
-            reply_text = generate_hint(ask, g)
+            reply_text = add_goal_line(ask, generate_hint(ask, g))
 
         print("\n" + "-" * 40)
         stuck_info = f" (level {stuck_level(ask)})" if ask.mode == "stuck" else ""

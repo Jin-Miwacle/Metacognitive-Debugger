@@ -97,6 +97,14 @@ _NOT_NAMES = _STOP | set("""
 look think read notice try great good let let's now remember okay hmm well english filipino tagalog
 taglish grade coach student tingnan basahin subukan tama magaling sige teksto
 """.split()) | set("""
+knowing looking reading keeping holding listening watching noticing thinking trying picking
+choosing starting seeing saying telling asking getting putting taking making working going
+nice exactly listen watch spot compare count name follow
+""".split()) | set("""
+summarize summarise predict connect recall retell restate list state give write say show match
+decide guess review skim scan underline highlight mark explain describe picture
+tukuyin ibuod hulaan ikonekta isalaysay ilarawan ipaliwanag suriin markahan
+""".split()) | set("""
 after again almost already also although always another any because before begin both but check
 choose close consider describe despite during each either even every except explain find first
 focus following for from good great here however if imagine instead keep last later let look
@@ -609,6 +617,40 @@ def check_ambiguity(ask: Callable, target: str, numbered: list) -> Optional[list
                     senses.append({"sense": text, "evidence": ids, "defined": bool(s.get("defined"))})
             return senses[:3]
     return None
+
+
+_WHICH_MEANING_TAILS = ("which one fits the rest of the passage",
+                        "alin ang bagay sa natitirang bahagi ng teksto")
+
+def asked_which_meaning(coach_line: str) -> bool:
+    """Was the coach's last turn the R3 question offering two meanings?
+
+    R3 reaching AMBIGUOUS is the system recording that the text does not settle
+    which meaning is right. One turn later the student picks one, the classifier
+    calls that a success, and the coach answers "That's right!" about a thing
+    nothing has decided. The two sentences are built from a template here, so the
+    turn is recognisable from its ending.
+    """
+    low = (coach_line or "").lower()
+    return any(tail in low for tail in _WHICH_MEANING_TAILS)
+
+
+def short_sense(text: str, limit: int = 7) -> str:
+    """A listed meaning, cut down to what the student needs to choose between.
+
+    The model writes dictionary definitions, and the tail of one carries detail
+    the passage has nothing to do with: "a device that produces light, typically
+    electric or gas-powered" for a lighthouse lamp with a shutter. The head is
+    the meaning; the rest is the dictionary talking, and it reaches the student
+    unchecked because this reply is built here rather than written by the model.
+    """
+    text = (text or "").strip()
+    if len(text.split()) <= limit:
+        return text
+    head = re.split(r"\s*[,;(]\s*", text)[0].strip()
+    # Cutting mid-phrase reads worse than a long meaning, so a definition with
+    # nothing to cut at is left alone.
+    return head if len(head.split()) >= 2 else text
 
 
 def context_words(target: str, numbered: list) -> list:
@@ -1228,7 +1270,8 @@ def fallback_reply(g: GroundingResult, lang: str) -> str:
                 else t["not_stated_plain"].format(what=what))
     if g.label == AMBIGUOUS:
         if len(g.senses) >= 2:
-            return t[AMBIGUOUS].format(target=g.target, a=g.senses[0]["sense"], b=g.senses[1]["sense"])
+            return t[AMBIGUOUS].format(target=g.target, a=short_sense(g.senses[0]["sense"]),
+                                       b=short_sense(g.senses[1]["sense"]))
         if g.target:
             return t["ambiguous_open"].format(target=g.target)
     if is_meaning(g) and g.evidence:
