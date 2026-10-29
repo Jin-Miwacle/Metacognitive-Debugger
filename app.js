@@ -108,16 +108,29 @@ function updateSupportBanner() {
     ? 'Extra support: check-ins are more frequent while we work through this together.'
     : 'Checking in a little more often: a few spots have been tricky.';
 }
-/* Quick word-overlap check against the goal (stopwords stripped) */
-const STOPWORDS = new Set(['the','a','an','to','of','in','on','for','and','or','is','are','was','were','it','its','that','this','what','why','how','do','does','did','i','me','my','understand','about','with','as','be','at','so','not']);
-function keywordsOf(text) {
-  return new Set((text.toLowerCase().match(/[a-z']+/g) || []).filter(w => w.length > 2 && !STOPWORDS.has(w)));
+/* Does this part of the text have anything to do with the student's goal?
+   One shared word is the whole test, so the word has to be worth something.
+
+   The second list is the words a goal is made of once its subject is removed.
+   Without it "I want to know what happened" matched any passage containing
+   "happened", and the coach was told the two were related when they shared
+   nothing but the phrasing of a goal. It mirrors _GOAL_WORDS in grounding.py;
+   the two are separate because one runs in the browser and one in Python. */
+const STOPWORDS = new Set(['the','a','an','to','of','in','on','for','and','or','is','are','was','were','it','its','that','this','do','does','did','i','me','my','with','as','be','at','so','not','she','he','they','her','his','their','you','your','we','our','us','them','him','had','has','have','been','will','would','can','could','there','then','than','from','but','if','all','any','some','one','two','out','up','down','over','into','who','whom','whose']);
+const GOAL_WORDS = new Set(['about','anything','article','better','everything','find','finding','fully','going','happen','happened','happens','how','idea','ideas','knew','know','knowing','learn','learned','learning','learnt','like','mean','meaning','means','more','part','parts','passage','point','points','properly','read','reading','something','story','text','thing','things','understand','understanding','understood','want','wanting','well','what','when','where','why','alam','alamin','basahin','bumasa','intindihin','kuwento','kwento','maintindihan','matutunan','teksto']);
+function keywordsOf(text, dropGoalWords) {
+  return new Set((text.toLowerCase().match(/[a-z']+/g) || [])
+    .filter(w => w.length > 2 && !STOPWORDS.has(w) && !(dropGoalWords && GOAL_WORDS.has(w))));
 }
 function goalOverlapWord(passage) {
   if (!state.goal) return null;
-  const gw = keywordsOf(state.goal.text), pw = keywordsOf(passage);
-  for (const w of pw) if (gw.has(w)) return w;
-  return null;
+  const gw = keywordsOf(state.goal.text, true), pw = keywordsOf(passage, true);
+  // The longest shared word, not the first one found. A goal about seeds kept
+  // back matched "kept" before "seeds" purely because "kept" came first in the
+  // passage, and "kept" is not what the goal is about.
+  let best = null;
+  for (const w of pw) if (gw.has(w) && (!best || w.length > best.length)) best = w;
+  return best;
 }
 
 /* ---- Saving progress to the database ---- */
