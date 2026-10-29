@@ -724,6 +724,51 @@ _META = set("""find look see read reading tell think mind means picture imagine 
 sentences show shows describe explain happen happens happened part parts else
 hanapin tingnan basahin isipin salita pangungusap talata""".split())
 
+# The vocabulary a denial is made of. These are about the text rather than in it,
+# so they must not count as the subject of one: "The text never says..." was read
+# as denying something about "never", which the passage happens to use.
+_DENIAL_WORDS = set("""
+text story passage sentence line never say says said saying tell tells told mention mentions
+mentioned state states exactly directly specifically anything something nothing about answer
+teksto kuwento kwento sinasabi sinabi binanggit banggit tiyak eksakto
+""".split()) | _META
+
+_DENIAL_HINGE = re.compile(r"\b(but|though|although|however|so|yet|pero|ngunit|subalit|kaya)\b", re.I)
+
+
+def _same_root(a: str, b: str, n: int = 5) -> bool:
+    """"wobble" and "wobbled" are the same word for this purpose."""
+    return a == b or a.startswith(b[:n]) or b.startswith(a[:n])
+
+
+def denial_subject_swapped(reply: str, question: str, passage: str) -> list:
+    """Is the reply saying the text is silent about something other than what was asked?
+
+    From a real session. The student asked a question about a character the story
+    says nothing about, and the coach answered "The text doesn't say why Mara is
+    lighting the lamp". True, honest-sounding, and about a question nobody asked.
+    The model will not always repeat a question it is uncomfortable with, and a
+    denial of a substituted question reads exactly like an answer.
+
+    Only the denial itself is examined, not the hint that follows it, so a reply
+    that declines and then points at the text keeps its second half. Returns the
+    passage words the denial put in place of the question's, empty when the reply
+    denies plainly ("the text doesn't say that") or denies what was actually asked.
+    """
+    if not reply or not question or not passage:
+        return []
+    asked = [t for t in key_terms(question) if t not in _DENIAL_WORDS]
+    for s in split_sentences(reply):
+        if not says_not_stated(s):
+            continue
+        head = _DENIAL_HINGE.split(s)[0]
+        swapped = [t for t in key_terms(head)
+                   if t not in _DENIAL_WORDS and _term_in(t, passage)
+                   and not any(_same_root(t, a) for a in asked)]
+        if swapped:
+            return swapped
+    return []
+
 
 def hedged_throughout(line: str) -> bool:
     """Every clause of a guess sounds like one: "Mandy was nervous because she was alone, and the
@@ -956,6 +1001,30 @@ _HEDGE = re.compile(r"\b(might|may|maybe|perhaps|probably|likely|seems?|suggests
 
 def is_hedged(reply: str) -> bool:
     return bool(_HEDGE.search(reply or ""))
+
+
+def ignores_the_claim(reply: str, claim: str, passage: str) -> bool:
+    """The student asserted something the passage does not mention. Did the coach deal with it?
+
+    R6 works out that a claim is NOT_MENTIONED, and until now nothing used that
+    verdict: CONTRADICTED set the label and NO_CLAIM fed one check, while this one
+    was recorded in the log and dropped. So a student could assert something the
+    story says nothing about and get back a question about an unrelated sentence,
+    with no sign their claim had been read at all.
+
+    Three ways of dealing with it count. Saying the text does not mention it.
+    Treating it as a guess, because an inference the student offers is also
+    NOT_MENTIONED and deserves "might" rather than a denial. Or naming the thing
+    they raised. Anything else changed the subject.
+    """
+    if not reply or not claim:
+        return False
+    if says_not_stated(reply) or is_hedged(reply):
+        return False
+    offtext = [t for t in key_terms(claim) if not _term_in(t, passage)]
+    if not offtext:
+        return False          # nothing in the claim is foreign to the text
+    return not any(_term_in(t, reply) for t in offtext)
 
 
 # A reply "says not stated" when it tells the student the text does not give the answer. The

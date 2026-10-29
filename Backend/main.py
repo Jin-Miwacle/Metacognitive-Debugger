@@ -639,6 +639,13 @@ def build_hint_prompt(ask, lang, g=None, retry_note=""):
     lines.append(f"Language for your reply: {'English' if lang == 'en' else 'Filipino (natural Taglish is OK)'}")
     instruction = mode_instruction(ask)
     branch = gr.branch_instruction(g, explaining(ask)) if g is not None else ""
+    if g is not None and g.claim == "NOT_MENTIONED":
+        # R6 knows the text says nothing either way about what the student just
+        # asserted. Without this the coach reads it, says nothing about it, and
+        # asks about a different sentence.
+        branch += (" The student has said something the text does not mention. Deal with that first: either"
+                   " say the text does not mention it, or treat it as their guess using words like \"might\""
+                   " or \"seems\". Do not simply move on to another part.")
     lines.append(f"\nInstruction for this turn: {instruction}" + (f" {branch}" if branch else ""))
     if retry_note:
         lines.append(retry_note)
@@ -692,6 +699,12 @@ _OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your an
 _ANSWERED_RETRY = (" The student has already answered this correctly. Tell them they are right, say what "
                    "it means in ONE short sentence using the context, and tell them they are ready to read "
                    "on. Do NOT ask another question.")
+_IGNORED_RETRY = (" The student said something the text does not mention, and your reply did not deal with it"
+                  " at all. Either say the text does not mention it, or treat it as their guess using words"
+                  " like \"might\" or \"seems\", before you ask anything else.")
+_SWAPPED_RETRY = (" Your reply said the text does not say something the student never asked about. "
+                  "Say plainly that the text does not say what they asked, without restating their "
+                  "question as a different one, then point them at the text.")
 _PICK_RETRY = (" The text supports both meanings, so the student's pick is neither right nor wrong. "
                "Do NOT agree with it or confirm it. Ask ONE short question about which words in the "
                "text made them choose it.")
@@ -773,6 +786,12 @@ def reply_problems(ask, reply, g):
     # correct, which is how a wrong answer gets marked right.
     if g is not None and g.claim == "NO_CLAIM" and gr.agrees(reply):
         problems.append("R6:agreed_nothing")
+    # R6. The student asserted something the text says nothing about, and the reply
+    # neither said so, nor treated it as a guess, nor even named it. The claim was
+    # read, understood to be unmentioned, and then silently passed over.
+    if g is not None and g.claim == "NOT_MENTIONED" and gr.ignores_the_claim(reply, g.question, rules_passage(ask)):
+        print(f"[grounding] the reply never deals with what the student said: {g.question[:60]!r}")
+        problems.append("R6:ignored_the_claim")
     # R12. The student answered, the text supports it, and the coach said so, then
     # asked another question anyway. The thread loops on a point already settled:
     # "You're right, cabinet is in the text. What kind of furniture holds records?"
@@ -785,6 +804,14 @@ def reply_problems(ask, reply, g):
     # so and the model still did it once, which is the whole reason rules exist here.
     if after_ambiguity(ask) and gr.agrees(reply):
         problems.append("R3:graded_the_pick")
+    # R2. A denial has to be about the question that was asked. Asked something the
+    # model would rather not repeat, it answers a nearby question instead and denies
+    # that one, which reads to the student exactly like an answer.
+    if g is not None and g.label == gr.NOT_STATED:
+        swapped = gr.denial_subject_swapped(reply, student_question(ask), rules_passage(ask))
+        if swapped:
+            print(f"[grounding] the reply denies {swapped} rather than what was asked")
+            problems.append("R2:denied_something_else")
     # R11. On a turn whose job is the selected words themselves, a reply that
     # drops them and explains a neighbouring name instead is off target.
     if on_the_selection(ask):
@@ -992,8 +1019,10 @@ def _checked_reply(ask, g, lang):
             + (_NOT_STATED_RETRY if "NOT_STATED:not_said" in problems else "")
             + (_AGREED_RETRY if "R6:agreed" in problems else "")
             + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
+            + (_IGNORED_RETRY if "R6:ignored_the_claim" in problems else "")
             + (_ANSWERED_RETRY if "R12:answered_and_asked_again" in problems else "")
             + (_PICK_RETRY if "R3:graded_the_pick" in problems else "")
+            + (_SWAPPED_RETRY if "R2:denied_something_else" in problems else "")
             + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
                if any(p.startswith("R11:") for p in problems) else "")
             + style_note(problems, lang))
