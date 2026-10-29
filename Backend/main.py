@@ -692,6 +692,9 @@ _OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your an
 _ANSWERED_RETRY = (" The student has already answered this correctly. Tell them they are right, say what "
                    "it means in ONE short sentence using the context, and tell them they are ready to read "
                    "on. Do NOT ask another question.")
+_PICK_RETRY = (" The text supports both meanings, so the student's pick is neither right nor wrong. "
+               "Do NOT agree with it or confirm it. Ask ONE short question about which words in the "
+               "text made them choose it.")
 _QUESTION_RETRY = (" End with ONE question for the student. Do NOT state the answer or explain it "
                    "outright: your job this turn is to help them work it out.")
 _LANG_RETRY = {"en": " Write your whole reply in English.",
@@ -739,10 +742,21 @@ def style_problems(ask, reply, settled=False):
     return problems
 
 
-def answered_already(g):
+def after_ambiguity(ask):
+    """This turn answers R3's "which of these two meanings fits?" question."""
+    return gr.asked_which_meaning(last_coach_line(ask))
+
+
+def answered_already(ask, g):
     """R12. The student gave an answer and the text supports it, so the turn is
-    finished: confirm it and stop, rather than asking the same thing again."""
-    return g is not None and g.claim == "SUPPORTED"
+    finished: confirm it and stop, rather than asking the same thing again.
+
+    Never true right after an ambiguity question. R3 asks that when the text
+    supports both meanings, so a pick cannot be the correct answer to it, and
+    treating the turn as settled is how the confirmation came back: R12 would
+    rewrite the question this turn is supposed to ask into "you're right".
+    """
+    return g is not None and g.claim == "SUPPORTED" and not after_ambiguity(ask)
 
 
 def reply_problems(ask, reply, g):
@@ -764,8 +778,13 @@ def reply_problems(ask, reply, g):
     # "You're right, cabinet is in the text. What kind of furniture holds records?"
     # The prompt for a follow-up turn always asks for a question, so it keeps asking
     # even once there is nothing left to work out.
-    if g is not None and g.claim == "SUPPORTED" and gr.agrees(reply) and gr.asks_question(reply):
+    if answered_already(ask, g) and gr.agrees(reply) and gr.asks_question(reply):
         problems.append("R12:answered_and_asked_again")
+    # R3. The question this turn answers was asked because the text supports both
+    # meanings, so there is nothing for the coach to agree with. The instruction says
+    # so and the model still did it once, which is the whole reason rules exist here.
+    if after_ambiguity(ask) and gr.agrees(reply):
+        problems.append("R3:graded_the_pick")
     # R11. On a turn whose job is the selected words themselves, a reply that
     # drops them and explains a neighbouring name instead is off target.
     if on_the_selection(ask):
@@ -928,13 +947,13 @@ def _checked_reply(ask, g, lang):
         if repeats_earlier(reply, before):
             print(f"[rules] still repeating -> text-based fallback: {reply!r}")
             return re_explain_fallback(ask, lang, g), True
-    style = style_problems(ask, reply, settled=answered_already(g))
+    style = style_problems(ask, reply, settled=answered_already(ask, g))
     if not grounding_on() or not rules_passage(ask):
         if not style:
             return reply, False
         print(f"[rules] reply failed {style} -> regenerating once: {reply!r}")
         reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=style_note(style, lang)), lang, 0.3)
-        if style_problems(ask, reply, settled=answered_already(g)):
+        if style_problems(ask, reply, settled=answered_already(ask, g)):
             print(f"[rules] still failing -> fallback template: {reply!r}")
             return gr.fallback_reply(g or gr.GroundingResult(), lang), True
         return reply, False
@@ -956,12 +975,13 @@ def _checked_reply(ask, g, lang):
             + (_AGREED_RETRY if "R6:agreed" in problems else "")
             + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
             + (_ANSWERED_RETRY if "R12:answered_and_asked_again" in problems else "")
+            + (_PICK_RETRY if "R3:graded_the_pick" in problems else "")
             + (_OFF_TARGET_RETRY.format(p=ask.passage or "that part")
                if any(p.startswith("R11:") for p in problems) else "")
             + style_note(problems, lang))
     reply = _generate_reply(ask, build_hint_prompt(ask, lang, g, retry_note=note), lang,
                             0.3 if temperature > 0.3 else 0.0)
-    problems = reply_problems(ask, reply, g) + style_problems(ask, reply, settled=answered_already(g))
+    problems = reply_problems(ask, reply, g) + style_problems(ask, reply, settled=answered_already(ask, g))
     if [p for p in problems if p != "R4:unhedged"]:
         print(f"[grounding] still failing {problems} -> fallback template: {reply!r}")
         if ask.mode == "success":

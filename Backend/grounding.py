@@ -1332,7 +1332,7 @@ def branch_instruction(g: GroundingResult, explaining: bool) -> str:
                 "guess or invent an answer, names or details. Ask what clues the student can find in the text.")
     if g.label == AMBIGUOUS:
         if len(g.senses) >= 2:
-            meanings = "; ".join(s["sense"] for s in g.senses)
+            meanings = "; ".join(short_sense(s["sense"]) for s in g.senses)
             return (f"The exact words \"{g.target}\" could mean: {meanings}. The text does not make clear "
                     f"which one. Present these meanings neutrally, do NOT pick one, and ask which one fits "
                     f"the rest of the passage.{spell}")
