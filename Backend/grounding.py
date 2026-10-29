@@ -1003,6 +1003,36 @@ def is_hedged(reply: str) -> bool:
     return bool(_HEDGE.search(reply or ""))
 
 
+def _deals_with(reply: str, terms: list) -> bool:
+    """Does the reply name any of these words at all?"""
+    return any(_term_in(t, reply) for t in terms)
+
+
+def ignores_a_wrong_claim(reply: str, claim: str) -> bool:
+    """The text contradicts what the student said. Did the coach even mention it?
+
+    R6 catches a reply that AGREES with a contradicted claim, and nothing caught
+    one that simply moved on, which leaves a wrong idea standing and unremarked.
+    No hedge escape here, unlike the unmentioned case: "she might have shouted"
+    against a text saying she did not is as wrong as agreeing outright.
+    """
+    if not reply or not claim:
+        return False
+    terms = [t for t in key_terms(claim) if t not in _DENIAL_WORDS]
+    return bool(terms) and not _deals_with(reply, terms)
+
+
+def meaning_not_offered(reply: str, target: str) -> bool:
+    """R3 found two meanings and asked which fits. Did the reply ask about the word?
+
+    The whole turn exists to put a choice in front of the student. A reply that
+    never names the word has quietly dropped it, and the student never sees that
+    the word had two readings at all.
+    """
+    target = (target or "").strip()
+    return bool(target) and bool(reply) and not _term_in(norm(target), reply)
+
+
 def ignores_the_claim(reply: str, claim: str, passage: str) -> bool:
     """The student asserted something the passage does not mention. Did the coach deal with it?
 
@@ -1031,12 +1061,15 @@ def ignores_the_claim(reply: str, claim: str, passage: str) -> bool:
 # INFERABLE hedge ("doesn't say this directly, but ...") is a clue, not that, so "directly" clauses go first.
 _DIRECT = re.compile(r"[^.?!]*\b(directly|direktang|direkta)\b[^.?!]*", re.I)
 _NOT_STATED_SAID = re.compile(
-    r"\b(doesn't|does not|didn't|did not|never)\s+(say|says|mention|mentions|tell|tells|state|states|explain)\b|"
+    # Up to two words may sit between ("doesn't really say", "hindi iyon sinasabi").
+    # Over-matching here only makes a reply count as a denial, which holds rules back
+    # rather than firing them, so it errs the safe way.
+    r"\b(doesn't|does not|didn't|did not|never)\s+(?:\w+\s+){0,2}(say|says|mention|mentions|tell|tells|state|states|explain)\b|"
     r"\bnot\s+(mentioned|stated|in the (text|passage|story|sentence))\b|"
     r"\b(isn't|is not|wasn't|was not)\s+(mentioned|stated|in the)\b|"
     r"\bno\s+(mention|information)\b|"
-    r"\bhindi\s+(sinabi|nabanggit|binanggit|sinasabi|nakasaad|binabanggit)\b|"
-    r"\bwalang\s+(nabanggit|binanggit|sinabi)\b",
+    r"\bhindi\s+(?:\w+\s+){0,2}(sinabi|nabanggit|binanggit|sinasabi|nakasaad|binabanggit)\b|"
+    r"\bwalang\s+(?:\w+\s+){0,2}(nabanggit|binanggit|sinabi)\b",
     re.I)
 
 

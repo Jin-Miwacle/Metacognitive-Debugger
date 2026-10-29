@@ -699,6 +699,10 @@ _OFF_TARGET_RETRY = (" The student asked about \"{p}\" and nothing else. Your an
 _ANSWERED_RETRY = (" The student has already answered this correctly. Tell them they are right, say what "
                    "it means in ONE short sentence using the context, and tell them they are ready to read "
                    "on. Do NOT ask another question.")
+_STANDING_RETRY = (" The text says the opposite of what the student said, and your reply did not mention"
+                   " that at all. Point them at the sentence that shows it before you ask anything else.")
+_MEANING_RETRY = (" The word \"{t}\" has two possible meanings here and your reply never mentions it."
+                  " Give both meanings and ask which one fits this passage.")
 _IGNORED_RETRY = (" The student said something the text does not mention, and your reply did not deal with it"
                   " at all. Either say the text does not mention it, or treat it as their guess using words"
                   " like \"might\" or \"seems\", before you ask anything else.")
@@ -792,6 +796,16 @@ def reply_problems(ask, reply, g):
     if g is not None and g.claim == "NOT_MENTIONED" and gr.ignores_the_claim(reply, g.question, rules_passage(ask)):
         print(f"[grounding] the reply never deals with what the student said: {g.question[:60]!r}")
         problems.append("R6:ignored_the_claim")
+    # R6. The text contradicts them and the reply changed the subject. Agreeing was
+    # already caught; walking past it was not, and it leaves the wrong idea standing.
+    if g is not None and g.claim == "CONTRADICTED" and gr.ignores_a_wrong_claim(reply, g.question):
+        print(f"[grounding] the text contradicts {g.question[:50]!r} and the reply never says so")
+        problems.append("R6:left_it_standing")
+    # R3. The turn exists to put two meanings in front of the student. A reply that
+    # never names the word has dropped the choice without them ever seeing it.
+    if g is not None and g.label == gr.AMBIGUOUS and gr.meaning_not_offered(reply, g.target):
+        print(f"[grounding] the reply never mentions {g.target!r}, so the two meanings were not offered")
+        problems.append("R3:meaning_not_offered")
     # R12. The student answered, the text supports it, and the coach said so, then
     # asked another question anyway. The thread loops on a point already settled:
     # "You're right, cabinet is in the text. What kind of furniture holds records?"
@@ -1020,6 +1034,9 @@ def _checked_reply(ask, g, lang):
             + (_AGREED_RETRY if "R6:agreed" in problems else "")
             + (_NOTHING_RETRY if "R6:agreed_nothing" in problems else "")
             + (_IGNORED_RETRY if "R6:ignored_the_claim" in problems else "")
+            + (_STANDING_RETRY if "R6:left_it_standing" in problems else "")
+            + (_MEANING_RETRY.format(t=(g.target if g is not None else "that word"))
+               if "R3:meaning_not_offered" in problems else "")
             + (_ANSWERED_RETRY if "R12:answered_and_asked_again" in problems else "")
             + (_PICK_RETRY if "R3:graded_the_pick" in problems else "")
             + (_SWAPPED_RETRY if "R2:denied_something_else" in problems else "")
