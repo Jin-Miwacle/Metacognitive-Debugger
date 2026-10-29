@@ -322,6 +322,60 @@ def names_in(text: str, earlier_missing: list) -> list:
     return names
 
 
+# The words a reading goal is made of once the subject is taken out. A goal with
+# nothing left after these is about reading rather than about a topic.
+_GOAL_WORDS = set("""
+understand understanding understood learn learning learnt learned know knowing knew
+read reading find finding want wanting like better more fully properly well
+about what why how who where when happen happens happened going
+story text passage reading article thing things part parts idea ideas point points
+mean means meaning everything something anything
+alam alamin matutunan maintindihan intindihin basahin bumasa kuwento kwento teksto
+""".split())
+
+
+def goal_fit(goal: str, passage: str) -> dict:
+    """Does the student's reading goal have anything to do with this text?
+
+    Checked when the goal is set, which is the only moment the student can still
+    do something about it. A goal about Mary against a text that never mentions
+    her is not an error to correct later: it is the student reading the whole
+    piece waiting for something that never arrives.
+
+    Three verdicts, and the difference between them is how sure we are.
+
+    "names" is near-certain. A proper name the text never uses is the same signal
+    R1 already trusts for questions, so it is reported plainly.
+
+    "no_overlap" is a guess. A goal can fit a text perfectly without sharing a
+    word with it ("why people leave home" against a story about a girl moving
+    away), so this is worth raising as a question and never as a verdict.
+
+    "ok" is everything else, which will be most goals.
+    """
+    goal = (goal or "").strip()
+    passage = passage or ""
+    if not goal or not passage:
+        return {"verdict": "ok", "names": [], "shared": []}
+
+    # No lowercase_hints here, unlike R1. In a question "what did michelle do"
+    # is worth treating as a name; in a goal the same setting turned
+    # "photosynthesis" into a missing person. A lowercase name is still caught,
+    # just by the softer check below, which is the right way round.
+    names = extract_names(goal, include_first=True)
+    missing = find_missing_names(names, passage)
+    if missing:
+        return {"verdict": "names", "names": missing, "shared": []}
+
+    # "I want to understand it better" is a real goal for any text and names no
+    # subject, so it must not be judged against this one.
+    terms = [t for t in key_terms(goal) if t not in _GOAL_WORDS]
+    shared = [t for t in terms if _term_in(t, passage)]
+    if terms and not shared:
+        return {"verdict": "no_overlap", "names": [], "shared": []}
+    return {"verdict": "ok", "names": [], "shared": shared[:5]}
+
+
 # ---------------------------------------------------------------------------
 # R2 evidence
 # ---------------------------------------------------------------------------

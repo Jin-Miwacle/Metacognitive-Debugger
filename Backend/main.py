@@ -1954,7 +1954,7 @@ def generate_checkin(ask: CheckinAsk) -> str:
 def health():
     return {
         "status": "ok",
-        "endpoints": ["/partner", "/quiz", "/checkin"],
+        "endpoints": ["/partner", "/quiz", "/checkin", "/goal"],
     }
 
 # After this many answers that did not show understanding, the coach explains outright.
@@ -2060,6 +2060,29 @@ def quiz(ask: QuizAsk):
         _fail("making the quiz", e)
 
 
+class GoalAsk(BaseModel):
+    goal: str = ""
+    text: str = ""
+
+
+@app.post("/goal")
+def goal(ask: GoalAsk):
+    """Does this goal have anything to do with this reading? Asked when the goal
+    is set, which is the only point the student can still change it.
+
+    No model call: this is the same name and term matching R1 and R2 already use,
+    so it answers immediately and cannot hold up the one generation lock."""
+    try:
+        fit = gr.goal_fit(ask.goal, ask.text)
+        print(f"[goal] {fit['verdict']} for {ask.goal[:60]!r}"
+              + (f" missing={fit['names']}" if fit["names"] else ""))
+        return fit
+    except Exception as e:
+        # A goal is set whether or not this works, so never fail the turn over it.
+        print(f"[goal] check failed, letting it through: {e}")
+        return {"verdict": "ok", "names": [], "shared": []}
+
+
 @app.post("/checkin")
 def checkin(ask: CheckinAsk):
     try:
@@ -2074,5 +2097,12 @@ if __name__ == "__main__":
     print(model.device)
 
     import uvicorn
-    print("\nStarting FastAPI server for HTML widget on http://localhost:8000 ...\n")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # 127.0.0.1 is IPv4 only. On Windows "localhost" usually resolves to ::1
+    # first, so a tunnel started against http://localhost:8000 can fail to
+    # connect and Cloudflare answers 502 while the browser reaches it fine.
+    # Point the tunnel at http://127.0.0.1:8000, or set BACKEND_HOST=0.0.0.0.
+    host = os.getenv("BACKEND_HOST", "127.0.0.1")
+    port = int(os.getenv("BACKEND_PORT", "8000"))
+    print(f"\nServing on http://{host}:{port}")
+    print(f"Point the tunnel at this exact address:  cloudflared tunnel --url http://127.0.0.1:{port}\n")
+    uvicorn.run(app, host=host, port=port)
