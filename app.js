@@ -57,6 +57,7 @@ const DEMO_READING_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentC
 /* ---------- State for the reading workspace (Goal / Debug / Check-in / Progress) ---------- */
 const state = {
   goal: null,            // { text, confidence }
+  goalFit: null,         // set when the goal has nothing to do with this reading
   threads: [],           // debug sessions
   pending: null,         // current text selection { text, paragraph, range }
   selectionNote: '',
@@ -408,9 +409,50 @@ function wireGoalForm(scope, g, onDone) {
     nudgeSupport({1:2, 2:1, 3:0, 4:-1, 5:-1}[conf ?? 3]);
     // Check-ins already started with the reading. Confidence only moves the next one.
     if (state.checkin.on) state.checkin.nextAt = Date.now() + effectiveCheckinSec() * 1000;
+    checkGoalFit(text);
     if (onDone) onDone();
     return true;
   };
+}
+
+/* A goal the reading has nothing to do with is worth saying at the moment it is
+   set, because that is the only point the student can still change it. Without
+   this they read the whole piece waiting for something that never arrives.
+   Two strengths, because we are not equally sure of the two cases. */
+async function checkGoalFit(text) {
+  // Cleared and redrawn up front: the checks below return early in several
+  // cases, and without this a banner about the previous goal would survive.
+  state.goalFit = null;
+  renderGoalFitBanner();
+  const passage = reader ? reader.innerText.trim() : '';
+  if (!text || !passage) return;
+  const d = await callBackend('/goal', { goal: text, text: passage.slice(0, 20000) });
+  if (!d || !d.verdict || state.goal?.text !== text) return;   // they changed it while we asked
+  if (d.verdict === 'names' && d.names?.length) {
+    const who = d.names.slice(0, 2).join(' or ');
+    state.goalFit = `This reading never mentions ${who}. You can change your goal, `
+      + `or keep it and see what the text does say.`;
+  } else if (d.verdict === 'no_overlap') {
+    // A guess, not a verdict: a goal can fit a text without sharing a word with it.
+    state.goalFit = 'This reading might not be about that. Keep your goal and see, or change it.';
+  }
+  if (state.goalFit) logEvent('goal_fit', { verdict: d.verdict, names: d.names || [] });
+  renderGoalFitBanner();
+}
+
+/* Above the tabs rather than a toast in the corner: a toast is gone in a few
+   seconds and this is the one moment the student can still change their goal. */
+function renderGoalFitBanner() {
+  const el = $('#goalFitBanner'); if (!el) return;
+  if (!state.goalFit) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `<span><b>About your goal</b>${esc(state.goalFit)}</span>
+    <button class="tiny" type="button" id="goalFitFix">Change it</button>`;
+  $('#goalFitFix', el).addEventListener('click', () => {
+    setTab('goal');
+    const box = $('#goalText');
+    if (box) { box.focus(); box.select(); }
+  });
 }
 function renderGoal() {
   const g = state.goal;
@@ -1124,7 +1166,7 @@ function exportLog() {
 function resetSession() {
   $$('mark.dbg', reader).forEach(m => { const p = m.parentNode; while (m.firstChild) p.insertBefore(m.firstChild, m); p.removeChild(m); p.normalize(); });
   Object.assign(state, {
-    goal: null, threads: [], pending: null, selectionNote: '',
+    goal: null, goalFit: null, threads: [], pending: null, selectionNote: '',
     session: { id: null },   // a new reading means a new database session
     pastedTitle: null,
     startedAt: Date.now(), log: []
@@ -1133,6 +1175,7 @@ function resetSession() {
   Object.assign(state.support, { score: 0, level: 'steady' });
   clearDrafts();
   $('#goalLine').textContent = 'No goal set yet';
+  renderGoalFitBanner();
   renderGoal(); renderDebug(); setTab('goal'); updateBadges();
   const host = $('#checkinPopupHost'); if (host) host.innerHTML = '';
 }
